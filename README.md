@@ -114,6 +114,23 @@ SwitchLibrary=ApacheHTTP|http://<Mac 的局域网 IP>:8080/files/
 | 原英文 nyx.bin | `78e357e111b5d62158486d1c8683c40bbf5248996f6c929c1e63689cf22dac62` |
 | HATS 原包 | `ad57d034cd7540f063b62d7db702f8a75aa691beb1f6e385014243005d4e04cf` |
 
+## 来源与许可
+
+本仓库只做配置和打包，所有组件的版权归原作者：
+
+| 组件 | 上游 | 许可 |
+|---|---|---|
+| Atmosphere / package3 | [Atmosphere-NX/Atmosphere](https://github.com/Atmosphere-NX/Atmosphere) | GPLv2 |
+| Hekate / Nyx / nyx.bin | [CTCaer/hekate](https://github.com/CTCaer/hekate) | GPLv2 |
+| 简体中文 Nyx | [easyworld/hekate](https://github.com/easyworld/hekate) | GPLv2（汉化） |
+| HATS 整合包 | [sthetix/HATS](https://github.com/sthetix/HATS) | 见上游 |
+| Ultrahand Overlay | [ppkantorski/Ultrahand-Overlay](https://github.com/ppkantorski/Ultrahand-Overlay) | GPLv2 |
+| DBI | [rashevskyv/DBI](https://github.com/rashevskyv/DBI) | 见上游 |
+
+`sd/atmosphere/package3` 与 `sd/bootloader/sys/nyx.bin` 是上游二进制，放这里只为方便自己换卡时直接覆盖；源码请到上表链接取。壁纸、图标、启动图由 `assets/` 里的图生成，图是自用素材。
+
+本仓库不含任何任天堂游戏文件、密钥（`prod.keys`）或票据数据。
+
 ## 说明
 
 自用配置，仓库私有。里面不含任天堂官方游戏数据；`package3` 是 Atmosphere 的二进制、`nyx.bin` 是 Hekate 的二进制，升级对应版本后需要重新替换或重打补丁。
