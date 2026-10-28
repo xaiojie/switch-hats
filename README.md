@@ -31,6 +31,7 @@ build/
   insert_splash_screen.py    # Atmosphere 官方启动图注入脚本
 assets/                      # 原始素材（AI 生成的鲸鱼娘图 + 绘图提示词）
 game-library/                # 局域网游戏库服务器（DBI 边下边装 + FTP 管 SD）
+dbi/                          # DBI 921 + 简体中文补丁（见 dbi/README.md）
 使用说明.txt                  # 给「拿到卡的人」看的简版说明
 一键写卡.command              # 把整个整合包写进插入的 SD 卡
 ```
@@ -125,7 +126,7 @@ SwitchLibrary=ApacheHTTP|http://<Mac 的局域网 IP>:8080/files/
 | 简体中文 Nyx | [easyworld/hekate](https://github.com/easyworld/hekate) | GPLv2（汉化） |
 | HATS 整合包 | [sthetix/HATS](https://github.com/sthetix/HATS) | 见上游 |
 | Ultrahand Overlay | [ppkantorski/Ultrahand-Overlay](https://github.com/ppkantorski/Ultrahand-Overlay) | GPLv2 |
-| DBI | [rashevskyv/DBI](https://github.com/rashevskyv/DBI) | 见上游 |
+| DBI / DBIPatcher | [rashevskyv/DBIPatcher](https://github.com/rashevskyv/DBIPatcher) | 见上游 |
 
 `sd/atmosphere/package3` 与 `sd/bootloader/sys/nyx.bin` 是上游二进制，放这里只为方便自己换卡时直接覆盖；源码请到上表链接取。壁纸、图标、启动图由 `assets/` 里的图生成，图是自用素材。
 
