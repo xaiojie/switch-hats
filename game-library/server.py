@@ -37,6 +37,8 @@ PORT = 8080
 STARTED = time.time()
 LOCK = threading.Lock()
 ACTIVITY = deque(maxlen=10)
+HTTP_CONNECTION = None
+FTP_CONNECTION = None
 
 CHUNK = 1024 * 1024
 
@@ -136,6 +138,24 @@ def record(method, path, status, ua):
     }
     with LOCK:
         ACTIVITY.appendleft(entry)
+
+
+def connection_snapshot():
+    """Report observed requests, not a persistent HTTP connection or a ping result."""
+    with LOCK:
+        observations = {"http": dict(HTTP_CONNECTION) if HTTP_CONNECTION else None,
+                        "ftp": dict(FTP_CONNECTION) if FTP_CONNECTION else None}
+    result = {}
+    now = time.time()
+    for kind, observation in observations.items():
+        if observation is None:
+            result[kind] = {"state": "waiting"}
+            continue
+        observation["seconds_ago"] = max(0, int(now - observation["last_seen"]))
+        observation["state"] = ("error" if observation["status"] >= 400 else
+                                "recent" if observation["seconds_ago"] <= 60 else "idle")
+        result[kind] = observation
+    return result
 
 
 # ---------------------------------------------------------------- Switch 文件（DBI FTP）
@@ -277,6 +297,19 @@ class Handler(BaseHTTPRequestHandler):
     server_version = "SwitchLibrary/1.0"
     protocol_version = "HTTP/1.0"   # 简单可靠；Range 照样能用
 
+    def send_response(self, code, message=None):
+        global HTTP_CONNECTION
+        path = urllib.parse.unquote(urllib.parse.urlsplit(getattr(self, "path", "")).path)
+        ua = getattr(self, "headers", {}).get("User-Agent", "")
+        if (getattr(self, "command", "") in ("GET", "HEAD")
+                and (path == "/files" or path.startswith("/files/"))
+                and re.search(r"\bDBI\b", ua, re.I)
+                and not ua.lower().startswith("mozilla/")):
+            with LOCK:
+                HTTP_CONNECTION = {"ip": self.client_address[0], "last_seen": time.time(),
+                                   "path": path, "status": code, "method": self.command}
+        super().send_response(code, message)
+
     # ---- 基础响应
     def _send(self, status, body=b"", ctype="application/json; charset=utf-8", extra=None):
         if isinstance(body, str):
@@ -402,6 +435,7 @@ class Handler(BaseHTTPRequestHandler):
             "free": free,
             "total": total,
             "activity": acts,
+            "switch_connection": connection_snapshot(),
             "uptime": int(time.time() - STARTED),
         })
 
@@ -588,6 +622,7 @@ class Handler(BaseHTTPRequestHandler):
                 pass
 
     def _sw_list(self, parsed):
+        global FTP_CONNECTION
         args = self._sw_args(parsed)
         if not args:
             return self._err(400, "地址或路径不合法")
@@ -596,10 +631,16 @@ class Handler(BaseHTTPRequestHandler):
         try:
             conn = sw_connect(host, port)
             items = sw_list(conn, path)
+            with LOCK:
+                FTP_CONNECTION = {"ip": host, "port": port, "last_seen": time.time(),
+                                  "status": 200, "error": ""}
             self._json({"ok": True, "host": host, "port": port, "path": path,
                         "items": items, "count": len(items)})
             record("GET", "sw:" + path, 200, self.headers.get("User-Agent"))
         except Exception as exc:
+            with LOCK:
+                FTP_CONNECTION = {"ip": host, "port": port, "last_seen": time.time(),
+                                  "status": 502, "error": str(exc)}
             self._err(502, "连不上 %s:%s（%s）" % (host, port, exc))
             record("GET", "sw:" + path, 502, self.headers.get("User-Agent"))
         finally:
@@ -873,6 +914,10 @@ PAGE = r"""<!doctype html>
   .pill small{color:var(--dim);font-size:11.5px;line-height:1.5;display:block}
   .pill.on{border-color:rgba(71,215,161,.4);background:rgba(71,215,161,.07)}
   .pill.on b{color:var(--good)}
+  .pill.failed{border-color:rgba(255,122,144,.4);background:rgba(255,122,144,.06)}
+  .pill.failed b{color:var(--bad)}
+  .connection-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}
+  .connection-head h2{margin:0}
   .pill.off{opacity:.5}
   .quick{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0 0}
   .quick button{padding:5px 11px;font-size:11.5px}
@@ -896,6 +941,24 @@ PAGE = r"""<!doctype html>
     <button class="tab" data-tab="sd">🗂 Switch 文件</button>
   </div>
 
+  <section class="card" aria-labelledby="connection-title">
+    <div class="connection-head">
+      <h2 id="connection-title">Switch 连接检测</h2>
+      <button id="checkConnection">立即检测</button>
+    </div>
+    <div class="chips">
+      <div class="pill" id="httpConnection" role="status" aria-live="polite">
+        <b>网络安装 · <span id="httpState">等待检测…</span></b>
+        <small id="httpDetail">等待 Switch 上的 DBI 访问游戏库。</small>
+      </div>
+      <div class="pill" id="ftpConnection" role="status" aria-live="polite">
+        <b>SD 卡文件管理 · <span id="ftpState">尚未检测 FTP</span></b>
+        <small id="ftpDetail">在「Switch 文件」填写 Switch 的 IP 并连接。</small>
+      </div>
+    </div>
+    <p class="hint">DBI 921：进入主菜单第三项「浏览 HTTP/FTP/Github 服务器…」，再选 <b>SwitchLibrary</b>，这里会自动更新。检测显示本次服务启动以来的访问记录；打开电脑网页不会算作 Switch 已连接。</p>
+  </section>
+
   <div id="panel-lib">
 
   <section class="card">
@@ -914,7 +977,7 @@ PAGE = r"""<!doctype html>
       <label>本机地址</label>
       <select id="ipsel" style="background:rgba(0,0,0,.35);color:#bfe0ff;border:1px solid var(--line);border-radius:8px;padding:7px 10px;font:12.5px/1.5 ui-monospace,Menlo,monospace"></select>
     </div>
-    <p class="hint">把上面第二行加到 SD 卡 <code style="flex:none">switch/DBI/dbi.config</code> 的 <b>[Network sources]</b> 下面；Switch 和 Mac 连同一个 Wi-Fi，DBI 主菜单就会出现「SwitchLibrary」。</p>
+    <p class="hint">把上面第二行加到 SD 卡 <code style="flex:none">switch/DBI/dbi.config</code> 的 <b>[Network sources]</b> 下面；Switch 和电脑连同一个局域网。DBI 921 进入「浏览 HTTP/FTP/Github 服务器…」后选「SwitchLibrary」；旧版可能直接显示在主菜单。</p>
   </section>
 
   <section class="card">
@@ -1036,12 +1099,45 @@ function updateUrls(){
 }
 $("#ipsel").addEventListener("change", e => { curIp = e.target.value; updateUrls(); });
 
+function renderConnection(info){
+  const http = info && info.http, ftp = info && info.ftp;
+  $("#httpConnection").className = "pill" + (http && http.state === "recent" ? " on" : http && http.state === "error" ? " failed" : "");
+  $("#ftpConnection").className = "pill" + (ftp && ftp.state === "recent" ? " on" : ftp && ftp.state === "error" ? " failed" : "");
+  if(!info){
+    $("#httpState").textContent = $("#ftpState").textContent = "网站不可达，无法检测";
+    $("#httpDetail").textContent = $("#ftpDetail").textContent = "恢复网站连接后将自动重试。";
+    return;
+  }
+  const httpLabels = {waiting:"尚未收到 DBI 访问", recent:"已收到 DBI 访问", idle:"曾访问，当前在线状态未知", error:"收到 DBI 请求，但返回错误"};
+  const ftpLabels = {waiting:"尚未检测 FTP", recent:"最近检测成功", idle:"上次检测成功，需重新确认", error:"检测失败"};
+  $("#httpState").textContent = httpLabels[http.state] || httpLabels.waiting;
+  $("#ftpState").textContent = ftpLabels[ftp.state] || ftpLabels.waiting;
+  $("#httpDetail").textContent = http.last_seen
+    ? "Switch IP：" + http.ip + " · 最近访问：" + ts(http.last_seen) + "（" + http.seconds_ago + " 秒前） · " + http.path + " · HTTP " + http.status
+    : "请在 DBI 的网络服务器浏览器中打开 SwitchLibrary；每 5 秒自动检查。";
+  $("#ftpDetail").textContent = ftp.last_seen
+    ? ftp.ip + ":" + ftp.port + " · 最近检测：" + ts(ftp.last_seen) + (ftp.error ? " · " + ftp.error : " · 已完成登录和目录读取")
+    : "仅管理 SD 卡文件时需要：在 DBI 启动 FTP，再到「Switch 文件」输入 IP 并连接。";
+}
+
+$("#checkConnection").onclick = async () => {
+  const button = $("#checkConnection");
+  button.disabled = true; button.textContent = "检测中…";
+  try{
+    if(sw.connected) await swGo(sw.path);
+    await refresh();
+  }finally{
+    button.disabled = false; button.textContent = "立即检测";
+  }
+};
+
 async function refresh(){
   try{
     const r = await fetch("/api/status", {cache: "no-store"});
+    if(!r.ok) throw new Error("网站不可达");
     const s = await r.json();
     setIps(s.ips);
-    $("#chip").textContent = "● 运行中 · " + s.count + " 个文件";
+    $("#chip").textContent = "● 网站运行中 · " + s.count + " 个文件";
     $("#chip").className = "chip";
     $("#dir").textContent = s.dir;
     const total = s.size, free = s.free;
@@ -1049,9 +1145,11 @@ async function refresh(){
       (free ? " · 磁盘剩余 " + human(free) : "");
     renderRows(s.files);
     renderActs(s.activity);
+    renderConnection(s.switch_connection);
   }catch(e){
-    $("#chip").textContent = "● 已断开";
+    $("#chip").textContent = "● 网站已断开";
     $("#chip").className = "chip off";
+    renderConnection(null);
   }
 }
 
@@ -1184,12 +1282,14 @@ async function swConnect(){
     if(!j.ok) throw new Error(j.error || "连接失败");
     sw.connected = true;
     localStorage.setItem("swHost", host); localStorage.setItem("swPort", String(port));
-    $("#swState").textContent = "已连接 " + host + ":" + port;
+    $("#swState").textContent = "检测成功 " + host + ":" + port;
     $("#swState").style.color = "var(--good)";
-    toast("连上 Switch 了");
+    toast("FTP 登录和目录读取成功");
     renderSw(j);
   }catch(e){
     sw.connected = false; swErr("连接失败：" + (e.message || e));
+  }finally{
+    await refresh();
   }
 }
 

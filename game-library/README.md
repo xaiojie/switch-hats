@@ -32,7 +32,7 @@ python3 server.py --port 8081 --dir "/Volumes/NAS/Switch"
    SwitchLibrary=ApacheHTTP|http://192.168.10.9:8080/files/
    ```
 2. 打开 SD 卡上的 `switch/DBI/dbi.config`，找到 `[Network sources]`，把这一行粘到下面（去掉行首分号）。
-3. Switch 打开 DBI，主菜单最下面会出现「SwitchLibrary」，点进去就能浏览、安装。
+3. Switch 打开 DBI 921，进入主菜单的「浏览 HTTP/FTP/Github 服务器…」（部分中文翻译显示为「正在浏览」），再选「SwitchLibrary」浏览、安装。旧版可能直接把网络源显示在主菜单。
 
 > Switch 和 Mac 必须在同一个 Wi-Fi。优先连 5GHz，2.4GHz 装大游戏会很慢。
 
@@ -42,6 +42,7 @@ python3 server.py --port 8081 --dir "/Volumes/NAS/Switch"
 - 查看库里文件、大小、修改时间、磁盘剩余
 - 复制单个文件的下载链接、改名、删除
 - 查看 DBI 最近的请求（确认 Switch 有没有连上来）
+- **Switch 连接检测**：每 5 秒更新。网络安装只在收到 DBI 对 `/files/` 的实际访问后显示成功，提供来源 IP、最近时间和错误码；浏览器打开网页不算 Switch 已连接。较早的成功记录显示为历史访问，不能据此确认当前在线。FTP 则独立记录实际登录和读取目录的检测结果，也可以点「立即检测」刷新；已连接 FTP 时会重新读取当前目录。
 - **「Switch 文件」标签页**：连上 Switch 的 DBI FTP（端口 5000），直接浏览、上传、下载、改名、删除 SD 卡里的文件（插件、自制程序、hekate 配置都走这里）
 
 ## 用「Switch 文件」管理 SD 卡
