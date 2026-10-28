@@ -1,0 +1,40 @@
+HATS 2026-10-16 + 简体中文 Hekate 菜单
+======================================
+
+【版本】
+- Atmosphere 1.12.1（官方最新正式版）
+- Hekatos 6.5.4（Hekate 6.5.4 内核，支持固件到 23.0.1）
+- Nyx 1.9.4 简体中文菜单（由 easyworld/hekate v6.5.4 汉化版替换）
+- HATS 构建：HATS-2026-10-16-50f58f7（官方 SHA256 已校验）
+
+【本包唯一的改动】
+- bootloader/sys/nyx.bin 已替换为简体中文版（1,404,241 B）
+- 原版英文 Nyx 备份在同目录 nyx.bin.orig（474,549 B），想恢复英文就把它改回 nyx.bin
+- Hekatos 引导 payload.bin 保持原样，所以仍然支持 23.0.1 固件
+- bootloader/sys/res.pak 与汉化包完全一致，中文菜单资源完整
+
+【复制到 SD 卡】
+1. 先把旧 SD 卡内容整个备份到电脑（重要）
+2. 把本文件夹“里面的所有内容”复制到 SD 卡根目录，覆盖同名文件
+3. 以前配置过 emuMMC 的，保留原 emummc.ini；旧整合包残留文件建议先清理干净再覆盖
+4. 不要动 SD 卡上的 Nintendo 文件夹和 emuMMC 隐藏分区
+
+【启动】
+- 用 RCM 注入器/注入狗加载 payload.bin，方法不变
+- 进入 Hekate 中文菜单 → 选 CFW (EMUMMC) 或 CFW (SYSMMC)
+- 首次进入建议先在 Hekate 里做一次 NAND 备份
+
+【特斯拉插件热键】
+- L + 十字键↓ + 右摇杆按下 → 打开 Ultrahand 菜单（插件列表在这里）
+- 含：sys-clk（超频）、Status Monitor（状态监控）、EdiZon（金手指）、
+  FPSLocker、sysmodules、emuiibo、sys-patch
+- Ultrahand 可在 Settings → Language 里选简体中文
+
+【升级固件提醒】
+- 本包没有附带 Daybreak，升级到 23.0.1 前需要补一个 Daybreak（要的话跟我说，我加进去）
+- 用 Daybreak 离线升级；升级前确认 Atmosphere / Hekate 已支持目标版本
+
+【校验值】
+- HATS 原包 SHA256: ad57d034cd7540f063b62d7db702f8a75aa691beb1f6e385014243005d4e04cf
+- 中文 nyx.bin SHA256: 4bc820b382a648af2988cef4a27747c55b5f2705949d90e89229f4979d03e4b0
+- 原英文 nyx.bin SHA256: 78e357e111b5d62158486d1c8683c40bbf5248996f6c929c1e63689cf22dac62
