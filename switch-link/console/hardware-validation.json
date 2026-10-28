@@ -1,0 +1,27 @@
+{
+  "date": "2026-10-28",
+  "console_version": "0.2.1",
+  "nro_sha256": "50f8ddca571b2b8baffaa5a0bcd7c54ad1cf06981e3e23fef6266e1979916c70",
+  "device_class": "Switch OLED",
+  "hos": "22.5.0 emuMMC",
+  "atmosphere": "1.12.1",
+  "launch_verified": true,
+  "automatic_discovery_verified": true,
+  "native_http_nsp_install_verified": true,
+  "successful_receipts": [
+    {
+      "result": 0,
+      "registered_titles": 1
+    },
+    {
+      "result": 0,
+      "registered_titles": 1
+    }
+  ],
+  "ftp_file_transfer_readback_verified": true,
+  "full_xci_install_verified": false,
+  "network_roaming_verified": false,
+  "power_loss_recovery_verified": false,
+  "python_tests": 61,
+  "browser_tests": 30
+}

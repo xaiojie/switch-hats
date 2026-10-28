@@ -1,0 +1,13 @@
+{
+  "file": "switch-link.nro",
+  "size": 4035785,
+  "sha256": "50f8ddca571b2b8baffaa5a0bcd7c54ad1cf06981e3e23fef6266e1979916c70",
+  "app_name": "Switch Link 0.2.1",
+  "version": "0.2.1",
+  "author": "Switch Link / Sphaira contributors",
+  "program_size": 2777088,
+  "icon_size": 6333,
+  "nacp_size": 16384,
+  "romfs_size": 1235924,
+  "hardware_tested": false
+}
