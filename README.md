@@ -150,4 +150,4 @@ SwitchLibrary=ApacheHTTP|http://<Mac 的局域网 IP>:8080/files/
 
 ## 说明
 
-自用配置，仓库私有。里面不含任天堂官方游戏数据；`package3` 是 Atmosphere 的二进制、`nyx.bin` 是 Hekate 的二进制，升级对应版本后需要重新替换或重打补丁。
+自用配置，仓库公开。里面不含任天堂官方游戏数据；`package3` 是 Atmosphere 的二进制、`nyx.bin` 是 Hekate 的二进制，升级对应版本后需要重新替换或重打补丁。
