@@ -5,7 +5,14 @@
 #include <vector>
 
 namespace papa {
-struct Track { std::string path, title, artist; };
+enum class SourceKind { SD, Cloud };
+struct Track {
+    std::string path, title, artist;
+    std::string id, album = "未知专辑", albumArtist, cover, lyrics, sourceId;
+    int trackNumber = 0, discNumber = 0;
+    double duration = 0;
+    SourceKind source = SourceKind::SD;
+};
 enum class Mode { Sequential, LoopAll, RepeatOne, Shuffle };
 const char* ModeName(Mode mode);
 struct Settings { int volume = 70; Mode mode = Mode::LoopAll; };
