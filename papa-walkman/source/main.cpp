@@ -59,12 +59,13 @@ int main(int,char**){
   appletSetAutoSleepDisabled(true);CreateDirectories(MusicRoot);CreateDirectories(ConfigRoot);
   Settings settings=LoadSettings(Config);LibraryModel model;std::string notice;
   LoadMediaState(ConfigRoot+"/state.json",model.user);
+  {MediaState savedResume;if(LoadMediaState(ConfigRoot+"/resume.json",savedResume))model.user.resume=savedResume.resume;}
   LoadSources(ConfigRoot+"/sources.json",model.user.sources);
   model.SetMode(settings.mode);
   MediaCache cache(ConfigRoot+"/cache");cache.RemoveStartupOrphans();
   {FILE*f=OpenUtf8File(ConfigRoot+"/cache-limit.txt","rb");if(f){unsigned long long limit=0;if(std::fscanf(f,"%llu",&limit)==1&&limit>=64ull*1024*1024&&limit<=4096ull*1024*1024)cache.SetLimit(limit);std::fclose(f);}}
   AudioPlayer player;player.Volume(settings.volume);ArtworkLoader artwork(cache);ThumbnailLoader thumbnails(cache);
-  Page page=Page::Player;bool tape=true,stale=false;int selected=0,offset=0,lyricScroll=-1;
+  Page page=Page::Library;bool tape=false,stale=false;int selected=0,offset=0,lyricScroll=-1;u64 lastLyricManual=0;
   if(!sockets)notice="网络初始化失败，SD 卡音乐仍可使用";
   std::string artKey;std::thread scanner;std::atomic<uint64_t>scanGeneration{0};std::atomic<bool>scanDone{false};bool scanning=false;
   LibraryLoadResult pending;bool refreshAgain=false;
@@ -77,15 +78,17 @@ int main(int,char**){
   auto options=[&]{cache.SetPins(pins());cache.Prune(pins());auto used=cache.Usage().bytes;StreamOptions o;o.cacheDirectory=cache.StreamDirectory();o.cacheBytes=used<cache.Limit()?cache.Limit()-used:0;return o;};
   auto playCurrent=[&](double start=0,bool paused=false){auto t=model.Current();if(!t)return;auto o=options();if(t->source==SourceKind::Cloud&&o.cacheBytes<128*1024){player.Stop();notice="缓存空间不足，请清理闲置缓存或提高上限";return;}player.SetStreamOptions(o);player.Play(t->path,start,paused);lyricScroll=-1;artwork.Request(*t);artKey=t->id;};
   auto change=[&](int direction,bool automatic){if(direction>0?model.Next(automatic):model.Previous())playCurrent();};
-  auto save=[&]{auto s=player.Snapshot();if(auto t=model.Current()){if(!s.loading&&s.error.empty()&&s.path==t->path){model.user.resume={*t,s.seconds,model.GetMode(),settings.volume,true};}}
-   std::string error;if(!SaveMediaState(ConfigRoot+"/state.json",model.user,&error))notice=error;
+  auto save=[&](bool full=true){auto s=player.Snapshot();if(auto t=model.Current()){if(!s.loading&&s.error.empty()&&s.path==t->path){model.user.resume={*t,s.seconds,model.GetMode(),settings.volume,true};}}
+   std::string error;if(full&&!SaveMediaState(ConfigRoot+"/state.json",model.user,&error))notice=error;
+   MediaState resumeOnly;resumeOnly.resume=model.user.resume;
+   if(!SaveMediaState(ConfigRoot+"/resume.json",resumeOnly,&error))notice=error;
    if(!SaveSettings(Config,settings))notice="设置保存失败，请检查 SD 卡";
   };
   auto resume=[&]{auto r=model.user.resume;if(!r.valid)return;model.Enqueue(r.track);model.StartQueue(model.Queued().size()-1);settings.mode=r.mode;settings.volume=r.volume;model.SetMode(r.mode);player.Volume(r.volume);playCurrent(r.position,false);notice=r.position>0?"正在恢复上次位置，云端歌曲可能需要等待缓存":"已打开上次歌曲";page=Page::Player;};
   auto volume=[&](int delta){settings.volume=std::max(0,std::min(100,settings.volume+delta));player.Volume(settings.volume);};
   std::vector<Track>visible;std::vector<LibraryGroup>groups;
   auto count=[&]()->int{if(page==Page::Settings)return model.user.sources.size();if(page==Page::Queue)return model.Queued().size();if(page==Page::Library&&model.ShowingGroups())return groups.size();return visible.size();};
-  auto reveal=[&]{selected=std::max(0,std::min(selected,count()-1));if(selected<offset)offset=selected;if(selected>=offset+VisibleRows)offset=selected-VisibleRows+1;offset=std::max(0,std::min(offset,std::max(0,count()-VisibleRows)));};
+  auto reveal=[&]{int rows=page==Page::Settings?4:VisibleRows;selected=std::max(0,std::min(selected,count()-1));if(selected<offset)offset=selected;if(selected>=offset+rows)offset=selected-rows+1;offset=std::max(0,std::min(offset,std::max(0,count()-rows)));};
   auto rebuild=[&]{visible=page==Page::Queue?model.Queued():model.Visible();groups=model.Groups();reveal();};
   auto chosen=[&]()->const Track*{return selected>=0&&size_t(selected)<visible.size()?&visible[selected]:nullptr;};
   auto resetSelection=[&]{selected=offset=0;rebuild();};
@@ -137,7 +140,7 @@ int main(int,char**){
   };
   PadState pad{};padConfigureInput(1,HidNpadStyleSet_NpadStandard);padInitializeDefault(&pad);hidInitializeTouchScreen();
   u64 lastFrame=svcGetSystemTick(),lastRepeat=0,lastSave=lastFrame,lastUsage=0;uint64_t handledEnd=0,cachedUsage=0;double animation=0;
-  bool touching=false,dragging=false;int touchX=0,touchY=0,lastX=0,lastY=0;
+  bool touching=false;int touchX=0,touchY=0,lastX=0,lastY=0;
   while(appletMainLoop()){
    u64 begin=svcGetSystemTick();double dt=std::min(.1,armTicksToNs(begin-lastFrame)/1e9);lastFrame=begin;
    if(scanning&&scanDone.load(std::memory_order_acquire)){scanner.join();scanning=false;model.SetTracks(SourceKind::SD,std::move(pending.sd));model.SetTracks(SourceKind::Cloud,std::move(pending.cloud));stale=pending.stale;notice=pending.notice;rebuild();if(refreshAgain){refreshAgain=false;startScan();}}
@@ -145,12 +148,17 @@ int main(int,char**){
    if(state.ended&&state.completion!=handledEnd){handledEnd=state.completion;change(1,true);state=player.Snapshot();}
    if(auto t=model.Current())if(artKey!=t->id){artKey=t->id;artwork.Request(*t);lyricScroll=-1;}
    auto art=artwork.Snapshot();if(!model.Current()||art.trackId!=model.Current()->id)art={};
+   if(lyricScroll>=0&&armTicksToNs(begin-lastLyricManual)>=6000000000ull)lyricScroll=-1;
+   auto scrollLyrics=[&](int rows){double userOffset=model.Current()?model.user.lyricsOffsets[model.Current()->id]:0;
+    int first=lyricScroll>=0?lyricScroll:ClampLyricScroll(art.lyrics.get(),art.lyrics?art.lyrics->Current(state.seconds,userOffset)-2:0);
+    lyricScroll=ClampLyricScroll(art.lyrics.get(),first+rows);lastLyricManual=begin;
+   };
    padUpdate(&pad);u64 down=padGetButtonsDown(&pad),held=padGetButtons(&pad);if(down&HidNpadButton_Plus)break;
    u64 nav=down;if(down&(HidNpadButton_Up|HidNpadButton_Down))lastRepeat=begin+armNsToTicks(250000000);
    else if(begin>lastRepeat){nav|=held&(HidNpadButton_Up|HidNpadButton_Down);lastRepeat=begin+armNsToTicks(100000000);}
    if(down&HidNpadButton_Minus){page=static_cast<Page>((int(page)+1)%5);resetSelection();}
-   if(nav&HidNpadButton_Up){if(page==Page::Lyrics)lyricScroll=std::max(0,lyricScroll<0&&art.lyrics?art.lyrics->Current(state.seconds)-3:lyricScroll-1);else --selected;reveal();}
-   if(nav&HidNpadButton_Down){if(page==Page::Lyrics)lyricScroll=std::max(0,lyricScroll<0&&art.lyrics?art.lyrics->Current(state.seconds)-1:lyricScroll+1);else ++selected;reveal();}
+   if(nav&HidNpadButton_Up){if(page==Page::Lyrics)scrollLyrics(-1);else --selected;reveal();}
+   if(nav&HidNpadButton_Down){if(page==Page::Lyrics)scrollLyrics(1);else ++selected;reveal();}
    if(down&HidNpadButton_Left)volume(-5);
    if(down&HidNpadButton_Right)volume(5);
    if(down&HidNpadButton_A){if(page==Page::Library)act({model.ShowingGroups()?Action::GroupItem:Action::Song,selected});else if(page==Page::Queue)act({Action::QueueSong,selected});else if(page==Page::Settings)act({Action::SourceEdit,selected});else if(page==Page::Player&&chosen()&&(!model.Current()||chosen()->id!=model.Current()->id))act({Action::Song,selected});else act({Action::Toggle});}
@@ -179,10 +187,14 @@ int main(int,char**){
    if(!state.paused&&!state.ended&&!state.loading&&!state.buffering&&state.error.empty())animation=std::fmod(animation+dt*.9,6.283185307);
    view.animation=animation;
    HidTouchScreenState touch{};bool hasTouch=hidGetTouchScreenStates(&touch,1)>0&&touch.count>0;
-   if(hasTouch){lastX=touch.touches[0].x;lastY=touch.touches[0].y;if(!touching){touching=true;dragging=false;touchX=lastX;touchY=lastY;}if(std::abs(lastY-touchY)>28||std::abs(lastX-touchX)>28)dragging=true;}
-   else if(touching){touching=false;if(dragging){if(page==Page::Lyrics){int first=lyricScroll<0&&art.lyrics?std::max(0,art.lyrics->Current(state.seconds)-2):std::max(0,lyricScroll);lyricScroll=std::max(0,first+(touchY-lastY)/56);}else {offset=std::max(0,std::min(offset+(touchY-lastY)/58,std::max(0,count()-VisibleRows)));selected=offset;}}else {act(HitTest(lastX,lastY,view));continue;}}
+   if(hasTouch){lastX=touch.touches[0].x;lastY=touch.touches[0].y;if(!touching){touching=true;touchX=lastX;touchY=lastY;}}
+   else if(touching){touching=false;auto gesture=ResolveGesture(touchX,touchY,lastX,lastY,view);
+    if(gesture.scrolling){if(gesture.lyrics)scrollLyrics(gesture.scrollRows);else {int rows=page==Page::Settings?4:VisibleRows;offset=std::max(0,std::min(offset+gesture.scrollRows,std::max(0,count()-rows)));selected=offset;}}
+    else act(gesture.hit);
+    continue; // Actions can replace model storage referenced by this frame.
+   }
    u32 stride=0;auto pixels=static_cast<uint32_t*>(framebufferBegin(&fb,&stride));renderer.Draw(pixels,stride,view);framebufferEnd(&fb);
-   if(armTicksToNs(begin-lastSave)>15000000000ull){save();lastSave=begin;}
+   if(armTicksToNs(begin-lastSave)>15000000000ull){save(false);lastSave=begin;}
    u64 elapsed=armTicksToNs(svcGetSystemTick()-begin);if(elapsed<33333333)svcSleepThread(33333333-elapsed);
   }
   ++scanGeneration;if(scanner.joinable())scanner.join();save();player.Stop();appletSetAutoSleepDisabled(false);
