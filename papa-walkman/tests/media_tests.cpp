@@ -31,6 +31,128 @@ static std::string tag(std::string body, int v = 3) {
     h += char((body.size() >> (7 * i)) & 127);
   return h + body;
 }
+
+static bool reviewRegressions() {
+  int failed = 0;
+  auto expect = [&](bool result, const char *name) {
+    if (!result) {
+      ++failed;
+      std::cerr << "REVIEW FAIL: " << name << "\n";
+    }
+  };
+  std::string repeated;
+  for (int i = 0; i < 20; ++i)
+    repeated += "[00:01]";
+  repeated += std::string(64 * 1024, 'x');
+  auto bounded = ParseLyrics(repeated);
+  size_t expanded = bounded.plain.size();
+  for (const auto &line : bounded.lines)
+    expanded += line.text.size();
+  expect(expanded <= 1024 * 1024, "aggregate expanded LRC text <=1MiB");
+  std::string error;
+  std::string marker = "#PAPA-TRACK "
+                       "{\"id\":\"sd:stale\",\"path\":\"https://a/"
+                       "later.mp3\",\"source\":\"SD\"}\n";
+  auto playlist = ParseCatalog("#EXTM3U\n" + marker +
+                                   "https://a/first.mp3\nhttps://a/later.mp3\n",
+                               "https://a/list", "s", error);
+  expect(playlist.size() == 2 && playlist[1].source == SourceKind::Cloud &&
+             playlist[1].id != "sd:stale",
+         "mismatching URI consumes marker");
+  playlist = ParseCatalog("#EXTM3U\n" + marker +
+                              "#PAPA-TRACK {broken\nhttps://a/later.mp3\n",
+                          "https://a/list", "s", error);
+  expect(playlist.size() == 1 && playlist[0].source == SourceKind::Cloud,
+         "invalid replacement clears marker");
+  for (const char *value : {"1e999", "NaN", "Infinity", "7junk", "garbage"}) {
+    playlist = ParseCatalog(std::string("#EXTM3U\n#EXTINF:") + value +
+                                ",title\na.mp3\n",
+                            "https://a/list", "s", error);
+    expect(playlist.size() == 1 && playlist[0].duration == 0,
+           "invalid EXTINF duration becomes unknown");
+  }
+  const std::string path = "build-host/media-review-state.json";
+  std::remove(path.c_str());
+  std::remove((path + ".bak").c_str());
+  MediaState prior;
+  prior.favorites.insert("keep");
+  MediaState result = prior;
+  std::string entries;
+  for (int i = 0; i < 5001; ++i) {
+    if (i)
+      entries += ',';
+    entries += R"({"id":"sd:x","path":"a"})";
+  }
+  std::string large =
+      R"({"version":1,"favorites":[],"playlists":[{"id":"a","name":"a","tracks":[)" +
+      entries + R"(]},{"id":"b","name":"b","tracks":[)" +
+      entries.substr(0, entries.rfind(",{")) +
+      R"(]}],"resume":{"valid":false}})";
+  put(path, large);
+  expect(!LoadMediaState(path, result, &error) &&
+             result.favorites == prior.favorites,
+         "aggregate 10001 tracks rejected without changing caller");
+  put(path,
+      R"({"version":1,"favorites":[],"playlists":[{"id":"a","tracks":[{}]}]})");
+  expect(!LoadMediaState(path, result, &error) &&
+             result.favorites == prior.favorites,
+         "malformed track rejected before materialization");
+  MediaState over;
+  Track track;
+  track.id = "sd:x";
+  track.path = "a";
+  over.playlists.push_back({"a", "a", std::vector<Track>(5001, track)});
+  over.playlists.push_back({"b", "b", std::vector<Track>(5000, track)});
+  expect(!SaveMediaState(path, over, &error),
+         "save aggregate 10001 tracks rejected");
+  over.playlists[1].tracks.pop_back();
+  over.resume.valid = true;
+  over.resume.track = track;
+  expect(!SaveMediaState(path, over, &error),
+         "valid resume included in aggregate track quota");
+
+  std::string fiveThousand = entries.substr(0, entries.rfind(",{"));
+  std::string boundary =
+      R"({"version":1,"favorites":[],"playlists":[{"tracks":[)" + fiveThousand +
+      R"(]},{"tracks":[)" + fiveThousand + R"(]}],"resume":{"valid":false}})";
+  put(path, boundary);
+  expect(LoadMediaState(path, result, &error) && result.playlists.size() == 2 &&
+             result.playlists[0].tracks.size() == 5000 &&
+             result.playlists[1].tracks.size() == 5000,
+         "exact 10000-track load boundary accepted");
+  auto validPosition = boundary.find("\"valid\":false");
+  boundary.replace(validPosition, 13,
+                   R"("valid":true,"track":{"id":"sd:x","path":"a"})");
+  result = prior;
+  put(path, boundary);
+  expect(!LoadMediaState(path, result, &error) &&
+             result.favorites == prior.favorites,
+         "load resume included in aggregate track quota");
+  over.resume.valid = false;
+  expect(SaveMediaState(path, over, &error),
+         "exact 10000-track save boundary accepted");
+  MediaState malformed;
+  malformed.playlists.push_back({"bad", "bad", {Track{}}});
+  expect(!SaveMediaState(path, malformed, &error),
+         "save malformed Track rejected");
+  expect(SaveMediaState(path, prior, &error) &&
+             SaveMediaState(path, prior, &error),
+         "create recoverable state fixture");
+  over.resume.valid = true;
+  expect(!SaveMediaState(path, over, &error),
+         "overquota save leaves valid primary intact");
+  result = MediaState{};
+  expect(LoadMediaState(path, result, &error) &&
+             result.favorites == prior.favorites,
+         "failed save preserved primary state");
+  put(path, large);
+  result = MediaState{};
+  expect(LoadMediaState(path, result, &error) &&
+             result.favorites == prior.favorites,
+         "overquota primary recovers valid backup");
+  std::cout << "review regressions: " << failed << " failures\n";
+  return failed == 0;
+}
 int main(int argc, char **argv) {
   if (argc == 3 && std::string(argv[1]) == "--smoke") {
     std::ifstream list(argv[2]);
@@ -52,6 +174,8 @@ int main(int argc, char **argv) {
     return 0;
   }
 
+  if (!reviewRegressions())
+    return 1;
   auto l = ParseLyrics("\xef\xbb\xbf[ar:Test]\n[offset:250]\n[00:02.50][00:01."
                        "00]歌词\n[00:03]end");
   assert(l.lines.size() == 3 && l.lines[0].text == "歌词");

@@ -400,8 +400,89 @@ Track trackRead(yyjson_val *v) {
 bool validVersion(yyjson_val *r) {
   return yyjson_is_obj(r) && num(r, "version") == 1;
 }
+
+bool stateTrackShape(yyjson_val *v) {
+  if (!yyjson_is_obj(v))
+    return false;
+  for (const char *key : {"path", "id"}) {
+    auto x = yyjson_obj_get(v, key);
+    if (!yyjson_is_str(x) || yyjson_get_len(x) == 0)
+      return false;
+  }
+  for (const char *key : {"title", "artist", "album", "albumArtist", "cover",
+                          "lyrics", "sourceId", "source"}) {
+    auto x = yyjson_obj_get(v, key);
+    if (x && !yyjson_is_str(x))
+      return false;
+  }
+  for (const char *key : {"trackNumber", "discNumber", "duration"}) {
+    auto x = yyjson_obj_get(v, key);
+    if (x && (!yyjson_is_num(x) || !std::isfinite(yyjson_get_num(x)) ||
+              yyjson_get_num(x) < 0))
+      return false;
+  }
+  return true;
+}
+bool stateShape(yyjson_val *r) {
+  for (const char *key : {"favorites", "sources", "playlists"}) {
+    auto a = yyjson_obj_get(r, key);
+    if (a && (!yyjson_is_arr(a) || yyjson_arr_size(a) > CountLimit))
+      return false;
+  }
+  auto offsets = yyjson_obj_get(r, "lyricsOffsets");
+  if (offsets &&
+      (!yyjson_is_obj(offsets) || yyjson_obj_size(offsets) > CountLimit))
+    return false;
+  size_t i, n;
+  yyjson_val *v, *k;
+  yyjson_obj_foreach(offsets, i, n, k, v) {
+    if (!yyjson_is_num(v) || !std::isfinite(yyjson_get_num(v)))
+      return false;
+  }
+  size_t total = 0;
+  auto playlists = yyjson_obj_get(r, "playlists");
+  yyjson_arr_foreach(playlists, i, n, v) {
+    if (!yyjson_is_obj(v))
+      return false;
+    auto tracks = yyjson_obj_get(v, "tracks");
+    if (!yyjson_is_arr(tracks) || yyjson_arr_size(tracks) > CountLimit - total)
+      return false;
+    total += yyjson_arr_size(tracks);
+    size_t j, count;
+    yyjson_val *x;
+    yyjson_arr_foreach(tracks, j, count, x) {
+      if (!stateTrackShape(x))
+        return false;
+    }
+  }
+  auto resume = yyjson_obj_get(r, "resume");
+  if (resume) {
+    if (!yyjson_is_obj(resume))
+      return false;
+    auto valid = yyjson_obj_get(resume, "valid");
+    if (valid && !yyjson_is_bool(valid))
+      return false;
+    if (yyjson_get_bool(valid)) {
+      if (total == CountLimit ||
+          !stateTrackShape(yyjson_obj_get(resume, "track")))
+        return false;
+      auto position = yyjson_obj_get(resume, "position");
+      if (position && (!yyjson_is_num(position) ||
+                       !std::isfinite(yyjson_get_num(position)) ||
+                       yyjson_get_num(position) < 0))
+        return false;
+    }
+  }
+  return true;
+}
+bool nativeTrackShape(const Track &t) {
+  return !t.path.empty() && !t.id.empty() && std::isfinite(t.duration) &&
+         t.duration >= 0 && t.trackNumber >= 0 && t.discNumber >= 0;
+}
 bool documentShape(yyjson_val *r, const char *key, bool object) {
   if (!validVersion(r))
+    return false;
+  if (std::strcmp(key, "favorites") == 0 && !stateShape(r))
     return false;
   auto value = yyjson_obj_get(r, key);
   return object ? yyjson_is_obj(value) : yyjson_is_arr(value);
@@ -497,6 +578,7 @@ Lyrics ParseLyrics(const std::string &raw) {
   if (text.compare(0, 3, "\xef\xbb\xbf") == 0)
     text.erase(0, 3);
   std::istringstream in(text);
+  size_t expandedText = 0;
   std::string s;
   while (std::getline(in, s)) {
     if (!s.empty() && s.back() == '\r')
@@ -528,10 +610,20 @@ Lyrics ParseLyrics(const std::string &raw) {
       pos = end + 1;
     }
     if (!times.empty()) {
-      for (double t : times)
-        if (l.lines.size() < CountLimit)
-          l.lines.push_back({t, s.substr(pos)});
+      for (double t : times) {
+        if (l.lines.size() >= CountLimit)
+          return Lyrics{};
+        const size_t bytes = s.size() - pos;
+        if (bytes > TextLimit - expandedText)
+          return Lyrics{};
+        expandedText += bytes;
+        l.lines.push_back({t, s.substr(pos)});
+      }
     } else if (pos == 0) {
+      size_t bytes = s.size() + (!l.plain.empty() ? 1 : 0);
+      if (bytes > TextLimit - expandedText)
+        return Lyrics{};
+      expandedText += bytes;
       if (!l.plain.empty())
         l.plain += '\n';
       l.plain += s;
@@ -832,6 +924,7 @@ std::vector<Track> ParseCatalog(const std::string &raw, const std::string &base,
     if (line.empty())
       continue;
     if (line.compare(0, 12, "#PAPA-TRACK ") == 0) {
+      hasImported = false;
       auto d = json(line.substr(12));
       if (d) {
         imported = trackRead(yyjson_doc_get_root(d.get()));
@@ -842,7 +935,13 @@ std::vector<Track> ParseCatalog(const std::string &raw, const std::string &base,
     if (line.compare(0, 8, "#EXTINF:") == 0) {
       auto comma = line.find(',');
       if (comma != std::string::npos) {
-        duration = std::max(0., atof(line.substr(8, comma - 8).c_str()));
+        std::string value = trim(line.substr(8, comma - 8));
+        char *end = nullptr;
+        double parsed = strtod(value.c_str(), &end);
+        duration = end != value.c_str() && *end == 0 && std::isfinite(parsed) &&
+                           parsed > 0
+                       ? parsed
+                       : 0;
         title = line.substr(comma + 1);
         auto dash = title.find(" - ");
         artist.clear();
@@ -873,6 +972,8 @@ std::vector<Track> ParseCatalog(const std::string &raw, const std::string &base,
       t.artist = artist;
       t.duration = duration;
     }
+    hasImported =
+        false; // Marker identity belongs only to its immediately following URI.
     out.push_back(t);
     title.clear();
     artist.clear();
@@ -996,6 +1097,34 @@ bool SaveMediaState(const std::string &p, const MediaState &s, std::string *e) {
       *e = "state count exceeded";
     return false;
   }
+  size_t total = s.resume.valid ? 1 : 0;
+  if (s.resume.valid &&
+      (!nativeTrackShape(s.resume.track) || !std::isfinite(s.resume.position) ||
+       s.resume.position < 0)) {
+    if (e)
+      *e = "invalid resume";
+    return false;
+  }
+  for (const auto &pl : s.playlists) {
+    if (pl.tracks.size() > CountLimit - total) {
+      if (e)
+        *e = "aggregate track count exceeded";
+      return false;
+    }
+    total += pl.tracks.size();
+    for (const auto &t : pl.tracks)
+      if (!nativeTrackShape(t)) {
+        if (e)
+          *e = "invalid playlist track";
+        return false;
+      }
+  }
+  for (const auto &value : s.lyricsOffsets)
+    if (!std::isfinite(value.second)) {
+      if (e)
+        *e = "invalid lyrics offset";
+      return false;
+    }
   std::string o = "{\"version\":1,\"sources\":" + sourceJson(s.sources) +
                   ",\"favorites\":[";
   bool comma = false;
@@ -1091,7 +1220,8 @@ bool LoadMediaState(const std::string &p, MediaState &s, std::string *e) {
       out.lyricsOffsets[yyjson_get_str(k)] = yyjson_get_num(v);
   }
   auto resume = yyjson_obj_get(r, "resume");
-  out.resume.track = trackRead(yyjson_obj_get(resume, "track"));
+  if (yyjson_get_bool(yyjson_obj_get(resume, "valid")))
+    out.resume.track = trackRead(yyjson_obj_get(resume, "track"));
   out.resume.position = std::max(0., num(resume, "position"));
   out.resume.mode = Mode(std::max(0, std::min(3, integer(resume, "mode", 3))));
   out.resume.volume =

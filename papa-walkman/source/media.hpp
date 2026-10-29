@@ -14,6 +14,8 @@ struct Lyrics {
       0; // seconds, LRC [offset:milliseconds]; positive means display earlier.
   int Current(double seconds, double userOffset = 0) const;
 };
+// Expanded lyric text is capped at 1 MiB across all lines; overflow returns
+// empty Lyrics.
 Lyrics ParseLyrics(const std::string &text);
 struct Metadata {
   std::string title, artist, album, albumArtist, year, coverMime, rawLyrics;
@@ -68,7 +70,8 @@ struct MediaState {
 // Track]}], lyricsOffsets:{id:seconds},
 // resume:{track:Track,position,mode:0..3,volume,valid}, sources:[...]. Save
 // writes .tmp then keeps prior valid file as .bak. Load falls back to .bak on
-// malformed primary.
+// malformed primary. Playlist tracks plus a valid resume track have one shared
+// 10000-entry quota; malformed entries are rejected before constructing Tracks.
 bool SaveMediaState(const std::string &path, const MediaState &state,
                     std::string *error = nullptr);
 bool LoadMediaState(const std::string &path, MediaState &state,
