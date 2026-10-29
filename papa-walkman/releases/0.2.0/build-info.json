@@ -1,0 +1,27 @@
+{
+  "file": "papa-walkman.nro",
+  "size": 918821,
+  "sha256": "3396b276acc9688c87a07ad40ea15c22bf9630f56847d59a9c25f1d6e8235320",
+  "title": "爬爬的随身听",
+  "author": "Papa",
+  "version": "0.2.0",
+  "icon_size": 9453,
+  "icon_dimensions": [
+    256,
+    256
+  ],
+  "program_size": 892928,
+  "hardware_tested": false,
+  "compiler": "devkitA64 GCC 16.1.0",
+  "renderer": "libnx framebuffer / shared system fonts / stb_truetype",
+  "audio": "libnx audout / streaming minimp3 / 48000Hz stereo",
+  "software_validation": [
+    "core queue/library/resampling/settings",
+    "real MP3 decoder/seek/cancel",
+    "playback engine/pause/seek/EOF/output errors",
+    "UI hit targets/render bounds",
+    "ARM64 NRO build and icon/NACP validation",
+    "same-code UI preview inspection"
+  ],
+  "hardware_validation": "Not performed; sound quality, focus/sleep and sustained playback remain unverified."
+}

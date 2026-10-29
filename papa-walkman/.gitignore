@@ -1,6 +1,7 @@
-build/
-*.elf
-*.nro
-*.o
-*.d
-*.map
+/build/
+/build-host/
+/*.elf
+/*.nro
+/*.nacp
+/*.map
+/tests/fixtures/

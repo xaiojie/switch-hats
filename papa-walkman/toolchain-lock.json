@@ -1,0 +1,66 @@
+{
+  "devkitA64": {
+    "filename": "devkitA64-r30-1-any.pkg.tar.zst",
+    "sha256": "66f100490dafe506495ee083bc932aa2c2f231b5dafaa2b203d1832389b700e9",
+    "url": "https://pkg.devkitpro.org/packages/devkitA64-r30-1-any.pkg.tar.zst"
+  },
+  "devkita64-binutils": {
+    "filename": "devkita64-binutils-2.46.0-1-x86_64.pkg.tar.zst",
+    "sha256": "c516a70a31521b61e18759669c6f5c6718796a6cbb0b3c1c023a2ac418f79988",
+    "url": "https://pkg.devkitpro.org/packages/windows/x86_64/devkita64-binutils-2.46.0-1-x86_64.pkg.tar.zst"
+  },
+  "devkita64-cmake": {
+    "filename": "devkita64-cmake-1.1.3-1-any.pkg.tar.zst",
+    "sha256": "f2baa41f2b776ea5e7c5340464d2ba1bcccbc73a96c3293c91ae13df9ee5d467",
+    "url": "https://pkg.devkitpro.org/packages/devkita64-cmake-1.1.3-1-any.pkg.tar.zst"
+  },
+  "devkita64-gcc": {
+    "filename": "devkita64-gcc-16.1.0-1-x86_64.pkg.tar.zst",
+    "sha256": "4ccf7ee6f3d85248f3b58708e44aa3e9f777479ff90cd4409a95862752e85400",
+    "url": "https://pkg.devkitpro.org/packages/windows/x86_64/devkita64-gcc-16.1.0-1-x86_64.pkg.tar.zst"
+  },
+  "devkita64-newlib": {
+    "filename": "devkita64-newlib-4.6.0.20260123-4-any.pkg.tar.zst",
+    "sha256": "fc97ba1009a94b68f8714c3cc548ef697ca82687b72fe0c05a7ca3df81beb53e",
+    "url": "https://pkg.devkitpro.org/packages/devkita64-newlib-4.6.0.20260123-4-any.pkg.tar.zst"
+  },
+  "devkita64-rules": {
+    "filename": "devkita64-rules-1.1.1-1-any.pkg.tar.zst",
+    "sha256": "2649cf7827243447070073acc2aa2fee152a0592fc30e827ceed803c565a1ede",
+    "url": "https://pkg.devkitpro.org/packages/devkita64-rules-1.1.1-1-any.pkg.tar.zst"
+  },
+  "dkp-cmake-common-utils": {
+    "filename": "dkp-cmake-common-utils-1.5.3-1-any.pkg.tar.zst",
+    "sha256": "9ddb64ff16962e6532d2a2bce1d7ae8eef4f6f5b859f145c2e58b87b7b164701",
+    "url": "https://pkg.devkitpro.org/packages/dkp-cmake-common-utils-1.5.3-1-any.pkg.tar.zst"
+  },
+  "libnx": {
+    "filename": "libnx-4.12.0-1-any.pkg.tar.zst",
+    "sha256": "c6950bdf8e4b872ece492225368c03e633776329548a7494f91aa1e8f239cd8a",
+    "url": "https://pkg.devkitpro.org/packages/libnx-4.12.0-1-any.pkg.tar.zst"
+  },
+  "switch-tools": {
+    "filename": "switch-tools-1.13.1-1-x86_64.pkg.tar.zst",
+    "sha256": "c9c5fc60e3dd2f82d7c6592611bd37cc610d150ef4fa75fe09ce329df998084d",
+    "url": "https://pkg.devkitpro.org/packages/windows/x86_64/switch-tools-1.13.1-1-x86_64.pkg.tar.zst"
+  },
+  "general-tools": {
+    "filename": "general-tools-1.4.4-1-x86_64.pkg.tar.zst",
+    "sha256": "a0fcea1a26c4f472c2ac98c409847dbec9d8e86ed82cd8b02131454f63d239f1",
+    "url": "https://pkg.devkitpro.org/packages/windows/x86_64/general-tools-1.4.4-1-x86_64.pkg.tar.zst"
+  },
+  "stb": {
+    "revision": "5c205738c191bcb0abc65c4febfa9bd25ff35234",
+    "headers": [
+      "stb_truetype.h",
+      "stb_image_write.h"
+    ]
+  },
+  "vendored_sha256": {
+    "third_party/minimp3/minimp3.h": "29735314aa1814ca4b089a3605202c1f57af67b3413603dfb246402eff413fd7",
+    "third_party/minimp3/minimp3_ex.h": "669d7d0fd3768e1fb99026267b02e6f069fe97350fa5c1eec9ac1f7d64189a9b",
+    "third_party/stb/LICENSE": "11dd149dbc50748419a22fcec275b5bcfb4c2d86d9fba8802e5c4ffd40c94609",
+    "third_party/stb/stb_image_write.h": "17f339e7582ff4d4d56e40b0e87d77eda8d8f8e62806278ddf8fcf0b8b3d9a84",
+    "third_party/stb/stb_truetype.h": "2d119d54c88197764a6494c3c79fb6cdb4bd3e8d6708c82b57cbb508b8a70090"
+  }
+}
