@@ -34,7 +34,7 @@ Ping、FMOD×3、NEX、NXInputManager、SystemService 都在运行），所以�
 ## 1. 工作目录
 
 ```
-/Users/jay/开发/switch-hats/dst-mods/
+/Users/jay/开发/switch-hats/research/dst-mods/
 ├── build_overlay.py          # 生成 LayeredFS 覆盖层（核心脚本，改这里）
 ├── push_ftp.py               # 把 overlay 推到 Switch（FTP 5000）
 ├── overlay/                  # 生成的覆盖层（build_overlay.py 的输出）
@@ -59,7 +59,7 @@ Switch 上开着 **Switch Link 自带的 FTP**，端口 **5000**，匿名登录�
 
 ```bash
 # 安装/更新覆盖层（把 overlay/atmosphere/... 推到卡上同名路径）
-cd /Users/jay/开发/switch-hats/dst-mods
+cd /Users/jay/开发/switch-hats/research/dst-mods
 python3 push_ftp.py
 
 # 卸载（删 /atmosphere/contents/010090100E334000 整棵目录）
@@ -262,7 +262,7 @@ self:InitializeModMain(modname, mod, "modmain.lua")          -- :548
 
 ## 11. 一句话给 Codex 的启动指令
 
-> 读 `/Users/jay/开发/switch-hats/dst-mods/HANDOFF-CODEX.md` 和同目录 `README.md`，
+> 读 `/Users/jay/开发/switch-hats/research/dst-mods/HANDOFF-CODEX.md` 和同目录 `README.md`，
 > 目标是把 Switch 版 DST 的测试 mod 加载通。核心脚本是 `build_overlay.py`，
 > 推送到 Switch 用 `python3 push_ftp.py`（FTP 5000 匿名，地址自动发现），
 > 崩溃报告和截图也在同一 FTP 的 `/atmosphere/crash_reports/` 和

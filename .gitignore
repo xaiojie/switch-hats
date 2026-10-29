@@ -8,10 +8,10 @@ __pycache__/
 /downloads/
 /work/
 /build-host/
-/game-library/游戏库/
-/sd/Nintendo/
-/sd/emuMMC/
-/sd/backup/
+/archive/game-library/游戏库/
+/cfw/sd/Nintendo/
+/cfw/sd/emuMMC/
+/cfw/sd/backup/
 *.log
 *.part
 *.keys

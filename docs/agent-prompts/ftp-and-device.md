@@ -1,4 +1,7 @@
-# 给 Claude Code 的提示词（直接整段复制粘贴）
+# 给别的 agent 的 FTP 提示词（存档）
+
+> 这是 2026-10-29 写给 Claude Code 的一次性提示词，保留下来是因为里面的判断方法通用。
+> 现行手册见 [../device-access.md](../device-access.md)，机器参数见 [../switch-hardware.md](../switch-hardware.md)。
 
 > 背景：Claude 连 Switch FTP 报 `OSError: [Errno 65] No route to host`，并据此认定
 > 「DBI FTP 端口没监听」，方向完全错了。下面是纠正版，核心原则是：**地址不写死，先发现再连接。**
@@ -13,8 +16,8 @@
 Switch 的 IP 是路由器 DHCP 分配的，**每次可能不一样**，写死就是错的第一步。
 仓库里已经有自动发现脚本，直接用：
 
-    cd /Users/jay/开发/switch-hats/dst-mods
-    python3 find_switch.py            # 输出 "192.168.1.75 5000"
+    cd /Users/jay/开发/switch-hats/research/dst-mods
+    python3 find_switch.py            # 输出 "<IP> 5000"
     python3 find_switch.py --host     # 只要 IP，方便 $(...) 用
 
 它的查找顺序：Switch Link 管理接口(127.0.0.1:8088) → 上次成功的缓存
@@ -83,7 +86,7 @@ Switch 的 IP 是路由器 DHCP 分配的，**每次可能不一样**，写死�
 
 ## 六、连上之后要做的事
 
-    cd /Users/jay/开发/switch-hats/dst-mods
+    cd /Users/jay/开发/switch-hats/research/dst-mods
     python3 push_ftp.py            # 不给地址，脚本自己发现
 
   推 4 个文件到 sdmc:/atmosphere/contents/010090100E334000/romfs/：

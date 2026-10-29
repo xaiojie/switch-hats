@@ -23,7 +23,8 @@ def main():
     args = build_parser().parse_args()
     addresses = local_addresses()
     host = args.host or '0.0.0.0'
-    existing_library = Path(__file__).resolve().parent.parent / 'game-library' / '游戏库'
+    # 旧版（第一代游戏库）把安装包放在 <repo>/game-library/游戏库；现在归档在 archive/ 下
+    existing_library = Path(__file__).resolve().parents[2] / 'archive' / 'game-library' / '游戏库'
     library_root = args.library or (existing_library if existing_library.is_dir() else args.data / 'library')
     app = Application(args.data, seeds=args.seed, library_root=library_root)
     app.http_share = HttpShare(app.library, host=args.http_host, port=args.http_port,

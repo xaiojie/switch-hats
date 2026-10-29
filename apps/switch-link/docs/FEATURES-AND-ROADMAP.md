@@ -1,7 +1,7 @@
 # Switch Link 功能盘点与扩展路线
 
-盘点对象：`switch-link/console/`（NRO 主机端，Sphaira GPL-3.0 改版） + `switch-link/switch_link/`（Mac 网页端）。
-版本 0.2.1。NRO 产物 `switch-link/releases/0.2.1/switch-link.nro`。
+盘点对象：`apps/switch-link/console/`（NRO 主机端，Sphaira GPL-3.0 改版） + `apps/switch-link/switch_link/`（Mac 网页端）。
+版本 0.2.1。NRO 产物 `apps/switch-link/releases/0.2.1/switch-link.nro`。
 
 ---
 

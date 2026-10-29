@@ -28,7 +28,7 @@ Switch 端打开 Switch Link 的 FTP（端口 5000，匿名登录）。
 Switch 的 IP 是 DHCP 分配的、会变，所以**不要在命令里写死地址**：`push_ftp.py` 会自动找。
 
 ```sh
-cd /Users/jay/开发/switch-hats/dst-mods
+cd /Users/jay/开发/switch-hats/research/dst-mods
 python3 build_overlay.py --romfs /tmp/dst_romfs
 python3 push_ftp.py            # 自动发现 Switch 的 IP
 ```
