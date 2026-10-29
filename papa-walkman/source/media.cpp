@@ -520,7 +520,8 @@ Lyrics ParseLyrics(const std::string &raw) {
           char *last;
           double sec = strtod(e + 1, &last);
           if (last != e + 1 && *last == 0 && sec >= 0 && sec < 60 &&
-              std::isfinite(m) && std::isfinite(sec))
+              std::isfinite(m) && std::isfinite(sec) &&
+              std::isfinite(m * 60 + sec))
             times.push_back(m * 60 + sec);
         }
       }
@@ -944,11 +945,16 @@ void EnrichTrack(Track &t, const std::string &cache) {
       (!m.rawLyrics.empty() || !m.lyrics.lines.empty())) {
     std::string p = cache + "/" + key + ".lrc", text = m.rawLyrics;
     if (!m.lyrics.lines.empty()) {
-      text.clear();
+      text = "[offset:" + number(m.lyrics.offset * 1000) + "]\n";
       for (const auto &l : m.lyrics.lines) {
-        char ts[64];
-        snprintf(ts, sizeof ts, "[%02d:%05.2f]", int(l.seconds / 60),
-                 fmod(l.seconds, 60));
+        char ts[384];
+        double minutes = std::floor(l.seconds / 60),
+               seconds = std::fmod(l.seconds, 60);
+        if (seconds >= 59.9995) {
+          minutes += 1;
+          seconds = 0;
+        }
+        snprintf(ts, sizeof ts, "[%.0f:%06.3f]", minutes, seconds);
         text += ts + l.text + "\n";
       }
     }

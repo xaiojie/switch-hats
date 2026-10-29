@@ -237,5 +237,18 @@ int main(int argc, char **argv) {
   density += "0]}";
   assert(ParseCatalog(density, "https://a/l", "s", err).empty() &&
          !err.empty());
+  put("build-host/media-offset.mp3",
+      tag(frame("USLT", std::string("\x03"
+                                    "eng\0",
+                                    5) +
+                            "[offset:500]\n[00:01]first\n[00:59.999]edge")));
+  Track offsetTrack;
+  offsetTrack.path = "build-host/media-offset.mp3";
+  EnrichTrack(offsetTrack, "build-host");
+  std::ifstream offsetFile(offsetTrack.lyrics);
+  std::string cachedLyrics((std::istreambuf_iterator<char>(offsetFile)),
+                           std::istreambuf_iterator<char>());
+  assert(ParseLyrics(cachedLyrics).offset == .5 &&
+         ParseLyrics(cachedLyrics).lines.size() == 2);
   std::cout << "media tests passed\n";
 }
