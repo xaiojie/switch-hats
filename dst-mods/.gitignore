@@ -1,0 +1,6 @@
+# 实验中间产物
+/work/
+
+# 从 Steam 创意工坊下载的第三方 mod（体积大、非本仓库代码）
+/workshop-mods/
+/workshop-mods.zip

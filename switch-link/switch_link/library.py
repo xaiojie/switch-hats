@@ -2,6 +2,7 @@
 from collections import deque
 import hashlib
 import html
+import os
 import json
 import math
 from pathlib import Path
@@ -78,7 +79,7 @@ class Library:
             with self.lock:
                 # Exclusive publication never replaces an existing in-use file.
                 try:
-                    target.hardlink_to(temporary)
+                    os.link(str(temporary), str(target))
                 except FileExistsError:
                     raise LibraryError('同名文件已经存在，已保留原文件')
             return {'name': name, 'size': size, 'state': 'ready', 'href': '/files/' + quote(name, safe='')}
