@@ -169,11 +169,12 @@ if (typeof document !== 'undefined') (() => {
   }
   function serviceError(message) { $('service-error').hidden = !message; $('service-error-text').textContent = message || ''; }
   function setPage(page) {
-    state.page = page === 'install' ? 'install' : 'sd';
+    state.page = ['install', 'music'].includes(page) ? page : 'sd';
     $('page-sd').hidden = state.page !== 'sd'; $('page-install').hidden = state.page !== 'install';
-    $('topbar-current').textContent = state.page === 'sd' ? 'FTP 文件管理' : 'HTTP 游戏安装';
+    $('page-music').hidden = state.page !== 'music';
+    $('topbar-current').textContent = state.page === 'sd' ? 'FTP 文件管理' : state.page === 'music' ? '随身听音乐库' : 'HTTP 游戏安装';
     document.querySelectorAll('[data-page]').forEach(link => { const active = link.dataset.page === state.page; link.classList.toggle('active', active); if (active) link.setAttribute('aria-current', 'page'); else link.removeAttribute('aria-current'); });
-    document.title = (state.page === 'sd' ? 'SD 卡文件' : '安装任务') + ' · Switch Link';
+    document.title = (state.page === 'sd' ? 'SD 卡文件' : state.page === 'music' ? '随身听音乐库' : '安装任务') + ' · Switch Link';
     renderDevice();
   }
   function renderDevice() {

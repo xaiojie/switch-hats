@@ -15,6 +15,7 @@ from .discovery import Discovery, local_addresses
 from .jobs import JobManager
 from .library import Library, LibraryError
 from .http_jobs import HttpInstallJobs, HttpJobError
+from .music import MusicLibrary, MusicError, MAX_TAG
 from .transport import RemoteError, RemoteFTP, validate_name, validate_path
 
 
@@ -28,6 +29,7 @@ class Application:
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.library = Library(library_root or self.data_dir / 'library')
+        self.music = MusicLibrary(self.data_dir / 'music')
         self.http_share = None
         self.control_share = None
         self.settings_path = self.data_dir / 'settings.json'
@@ -144,6 +146,12 @@ class Application:
                     native_install_available=bool(self.http_jobs.base_url),
                     native_install_error='' if self.http_jobs.base_url else 'Switch Link 主机 HTTP 安装通道尚未启动')
 
+    def music_status(self):
+        share = next((s for s in (self.http_share, self.control_share) if s and s.owned and s.music is self.music), None)
+        return dict(self.music.snapshot(), available=bool(share),
+                    catalog_url=share.url + '/music-library.json' if share else '',
+                    m3u_url=share.url + '/music-list.m3u8' if share else '')
+
     def close(self):
         self.stop.set()
         self.discovery.close()
@@ -195,10 +203,10 @@ def make_server(app, host, port, static_dir=None):
             self.body_remaining = max(0, self.body_remaining - len(chunk))
             return chunk
 
-        def data(self):
+        def data(self, limit=262144):
             try:
                 size = int(self.headers.get('Content-Length', 0))
-                if not 0 <= size <= 262144:
+                if not 0 <= size <= limit:
                     raise ValueError()
                 value = json.loads(self.read(size) or b'{}')
                 if not isinstance(value, dict):
@@ -234,6 +242,50 @@ def make_server(app, host, port, static_dir=None):
                 path = urllib.parse.unquote(parsed.path)
                 query = urllib.parse.parse_qs(parsed.query)
                 arg = lambda name, default='': (query.get(name) or [default])[0]
+                if method == 'GET' and path == '/api/music':
+                    return self.reply(app.music_status())
+                if method == 'PUT' and path == '/api/music':
+                    data = self.data()
+                    app.music.configure(data.get('root'), data.get('expected_library'))
+                    return self.reply(app.music_status())
+                if path in ('/api/music/sources', '/api/music/overrides'):
+                    key = path.rsplit('/', 1)[1]
+                    if method == 'GET': return self.reply(getattr(app.music, key))
+                    if method == 'PUT':
+                        data = self.data(4 * 1024 * 1024)
+                        with app.music.lock:
+                            app.music.assert_id(data.pop('expected_library', None))
+                            return self.reply(getattr(app.music, 'set_' + key)(data))
+                if method == 'PUT' and path == '/api/music/asset':
+                    size = int(self.headers.get('Content-Length', 0))
+                    if not 0 < size <= MAX_TAG: raise ApiError(413, '封面或歌词超过大小上限')
+                    content = self.read(size)
+                    if len(content) != size: raise ApiError(400, '资源接收中断')
+                    href = app.music.upload_asset(arg('kind'), content, arg('expected_library'))
+                    return self.reply({'href': href}, 201)
+                if method == 'GET' and path == '/api/music/sd-library':
+                    with app.bound_transport(arg('expected_device')) as peer:
+                        if not any(e['name'] == 'config' for e in peer.list('/')) or not any(e['name'] == 'papa-walkman' for e in peer.list('/config')):
+                            return self.reply({'version': 1, 'tracks': [], 'available': False})
+                        entries = peer.list('/config/papa-walkman')
+                        if not any(e['name'] == 'sd-library.json' for e in entries):
+                            return self.reply({'version': 1, 'tracks': [], 'available': False})
+                        received = bytearray()
+                        def collect(chunk):
+                            if len(received) + len(chunk) > 4 * 1024 * 1024: raise MusicError('SD 索引超过读取上限')
+                            received.extend(chunk)
+                        peer.download('/config/papa-walkman/sd-library.json', collect)
+                        catalog = json.loads(received)
+                        if catalog.get('version') != 1 or not isinstance(catalog.get('tracks'), list): raise MusicError('SD 索引格式不合法')
+                        return self.reply(dict(catalog, available=True))
+                if method == 'POST' and path == '/api/music/sync':
+                    data = self.data()
+                    with app.bound_transport(data.get('expected_device')) as peer:
+                        with app.music.lock, app.ftp_lock:
+                            app.music.assert_id(data.get('expected_library'))
+                            url = app.music_status()['catalog_url']
+                            results = app.music.sync(peer, url.rsplit('/', 1)[0] if url else '')
+                    return self.reply({'ok': True, 'files': results})
                 if method == 'GET' and path == '/api/status':
                     return self.reply(app.status())
                 if method == 'GET' and path == '/api/devices':
@@ -367,6 +419,8 @@ def make_server(app, host, port, static_dir=None):
             except RemoteError as exc:
                 self.reply({'ok': False, 'error': str(exc)}, 409)
             except LibraryError as exc:
+                self.reply({'ok': False, 'error': str(exc)}, 409)
+            except MusicError as exc:
                 self.reply({'ok': False, 'error': str(exc)}, 409)
             except HttpJobError as exc:
                 self.reply({'ok': False, 'error': str(exc)}, exc.status)

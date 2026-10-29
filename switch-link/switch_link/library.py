@@ -98,6 +98,7 @@ class HttpShare:
         self.external = False
         self.error = ''
         self.link_jobs = None
+        self.music = None
         self.lock = threading.RLock()
         self.transfers = deque(maxlen=20)
         self.switch_access = None
@@ -161,7 +162,17 @@ class HttpShare:
                     return self.body(('<!doctype html><meta charset="utf-8"><h1>Index of /files/</h1><pre>'
                                       + '\n'.join(links) + '</pre>').encode(), 'text/html; charset=utf-8')
                 scoped_job = None
-                if path.startswith('/link-files/') and share.link_jobs:
+                if path in ('/music-library.json', '/music-list.m3u8') and share.music:
+                    if path.endswith('.json'):
+                        return self.body(json.dumps(share.music.catalog(), ensure_ascii=False).encode('utf-8'), 'application/json; charset=utf-8')
+                    return self.body(share.music.m3u(share.url), 'audio/x-mpegurl; charset=utf-8')
+                if path.startswith('/music-file/') and share.music:
+                    try:
+                        target = share.music.file(path[len('/music-file/'):])
+                        source = target.open('rb')
+                    except (ValueError, OSError):
+                        return self.send_error(404)
+                elif path.startswith('/link-files/') and share.link_jobs:
                     parts = path.split('/',4)
                     if len(parts) != 5: return self.send_error(404)
                     try:
@@ -195,7 +206,10 @@ class HttpShare:
                         status = 206
                     length = max(0, end - start + 1)
                     self.send_response(status)
-                    self.send_header('Content-Type', 'application/octet-stream')
+                    music_type = {'.mp3': 'audio/mpeg', '.png': 'image/png', '.jpg': 'image/jpeg',
+                                  '.jpeg': 'image/jpeg', '.lrc': 'text/plain; charset=utf-8', '.txt': 'text/plain; charset=utf-8'}
+                    self.send_header('Content-Type', music_type.get(target.suffix.lower(), 'application/octet-stream')
+                                     if path.startswith('/music-file/') else 'application/octet-stream')
                     self.send_header('Content-Length', str(length))
                     self.send_header('Accept-Ranges', 'bytes')
                     if status == 206: self.send_header('Content-Range', f'bytes {start}-{end}/{size}')

@@ -24,6 +24,7 @@ def main():
     app.http_share = HttpShare(app.library, host=args.http_host, port=args.http_port,
                                advertise=addresses[0] if addresses else '127.0.0.1')
     app.http_share.link_jobs = app.http_jobs
+    app.http_share.music = app.music
     app.http_share.start()
     if app.http_share.owned:
         app.http_jobs.configure(app.http_share.url)
@@ -33,6 +34,7 @@ def main():
         app.control_share = HttpShare(app.library, host=args.http_host, port=args.http_port + 1,
                                       advertise=addresses[0] if addresses else '127.0.0.1')
         app.control_share.link_jobs = app.http_jobs
+        app.control_share.music = app.music
         app.control_share.start(reuse=False)
         if app.control_share.owned:
             app.http_jobs.configure(app.control_share.url)

@@ -10,6 +10,8 @@
   <link rel="stylesheet" href="/app.css">
   <script src="/app.js" defer></script>
   <script src="/library.js" defer></script>
+  <script src="/music.js" defer></script>
+  <link rel="stylesheet" href="/music.css">
 </head>
 <body>
 <svg xmlns="http://www.w3.org/2000/svg" class="icon-defs" aria-hidden="true"><defs>
@@ -41,7 +43,7 @@
   <aside class="sidebar" aria-label="主导航">
     <a class="brand" href="#sd" aria-label="Switch Link 首页"><span class="brand-mark"><svg class="icon"><use href="#i-link"/></svg></span><span>Switch<span class="brand-light"> Link</span><small>让连接更简单</small></span></a>
     <span class="nav-caption">工作空间</span>
-    <nav class="main-nav"><a class="nav-item active" href="#sd" data-page="sd" aria-current="page"><svg class="icon"><use href="#i-sd"/></svg><span>FTP 文件管理</span><svg class="icon nav-arrow"><use href="#i-chevron"/></svg></a><a class="nav-item" href="#install" data-page="install"><svg class="icon"><use href="#i-install"/></svg><span>HTTP 游戏安装</span><span class="nav-count" id="nav-job-count" hidden>0</span></a></nav>
+    <nav class="main-nav"><a class="nav-item active" href="#sd" data-page="sd" aria-current="page"><svg class="icon"><use href="#i-sd"/></svg><span>FTP 文件管理</span><svg class="icon nav-arrow"><use href="#i-chevron"/></svg></a><a class="nav-item" href="#install" data-page="install"><svg class="icon"><use href="#i-install"/></svg><span>HTTP 游戏安装</span><span class="nav-count" id="nav-job-count" hidden>0</span></a><a class="nav-item" href="#music" data-page="music"><svg class="icon"><use href="#i-list"/></svg><span>随身听音乐库</span></a></nav>
     <div class="sidebar-spacer"></div>
     <section class="device-card" aria-labelledby="device-name"><div class="device-card-top"><span class="eyebrow">SD 卡连接 · FTP</span><span class="connection-dot" id="device-dot"></span></div><div class="device-visual" aria-hidden="true"><div class="mini-console"><span class="console-left"></span><span class="console-screen"><svg class="icon"><use href="#i-link"/></svg></span><span class="console-right"></span></div><span class="device-orbit"></span></div><h2 id="device-name">连接你的 Switch</h2><p id="device-description">同一网络，自动发现。</p><button class="button button-device" id="choose-device"><svg class="icon"><use href="#i-wifi"/></svg><span id="choose-device-label">发现主机</span><svg class="icon end-icon"><use href="#i-arrow"/></svg></button><div class="storage" id="storage" hidden><div class="storage-label"><span>SD 卡空间</span><span id="storage-available"></span></div><div class="storage-track"><span id="storage-fill"></span></div><small id="storage-total"></small></div></section>
     <div class="sidebar-bottom"><span class="tiny-dot"></span>局域网直连<span id="app-version">Switch Link</span></div>
@@ -79,6 +81,7 @@
         <section class="jobs-section"><div class="jobs-heading"><div><h2>HTTP 下载记录</h2><p id="http-transfer-note">网络字节仅表示 HTTP 读取量；安装结果以主机返回的确认为准。</p></div></div><div id="http-transfers"></div></section>
         <section class="jobs-section"><div class="jobs-heading"><div><h2>安装任务 <span id="install-job-count">0</span></h2><p>显示主机当前步骤，等待主机确认安装结果。</p></div></div><div id="install-jobs"></div></section>
       </section>
+      <section id="page-music" class="music-page" hidden aria-label="随身听音乐库"></section>
       <section id="local-transfers" class="local-transfers" aria-label="正在接收文件" hidden><div class="section-label"><h3>电脑正在接收文件</h3><span>接收完成后将排队传到主机</span></div><div id="local-transfer-list"></div></section>
       <footer class="workspace-footer"><span class="footer-brand">Switch Link<span class="footer-dot"></span>在手边，也在主机上。</span><span>你的文件，通过局域网直达。</span></footer>
     </main>
