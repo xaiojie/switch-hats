@@ -5,6 +5,7 @@ namespace papa {
 struct Playback {
     std::string path,error;
     bool paused=true,loading=false,ended=false;
+    bool buffering=false,seekable=false,durationKnown=false;
     double seconds=0,duration=0;
     int rate=0,volume=70;
     uint64_t revision=0;
@@ -23,7 +24,8 @@ public:
 class Engine {
 public:
     explicit Engine(AudioSink& sink):sink_(sink){}
-    bool Open(const std::string& path,const std::atomic<uint64_t>* cancel=nullptr,uint64_t expected=0);
+    bool Open(const std::string& path,const std::atomic<uint64_t>* cancel=nullptr,uint64_t expected=0,std::shared_ptr<StreamStatus> status={},StreamOptions options={});
+    void Stop();
     void Seek(double seconds);
     void Pause(bool pause);
     void Volume(int value);

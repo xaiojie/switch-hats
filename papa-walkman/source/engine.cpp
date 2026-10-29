@@ -2,20 +2,25 @@
 #include <algorithm>
 #include <cmath>
 namespace papa {
-bool Engine::Open(const std::string&path,const std::atomic<uint64_t>*cancel,uint64_t expected){
+bool Engine::Open(const std::string&path,const std::atomic<uint64_t>*cancel,uint64_t expected,std::shared_ptr<StreamStatus> status,StreamOptions options){
     int volume=state_.volume;state_={};state_.volume=volume;state_.path=path;opened_=false;
     sourceEof_=drained_=false;playedFrames_=0;baseSeconds_=0;gain_=0;
     std::string error;
     if(!sink_.Reset(error)){Fail(error);return false;}
-    if(!decoder_.Open(path,cancel,expected)){Fail(decoder_.Error());return false;}
-    opened_=true;state_.rate=decoder_.Rate();state_.duration=decoder_.Duration();
+    if(!decoder_.Open(path,cancel,expected,status,options)){Fail(decoder_.Error());return false;}
+    opened_=true;state_.rate=decoder_.Rate();state_.duration=decoder_.Duration();state_.durationKnown=decoder_.DurationKnown();state_.seekable=decoder_.Seekable();
     resampler_.Reset(decoder_.Rate(),decoder_.Channels());Pause(false);
     return state_.error.empty();
 }
+void Engine::Stop(){
+    decoder_.Close();std::string ignored;sink_.Reset(ignored);
+    int volume=state_.volume;state_={};state_.volume=volume;
+    opened_=false;sourceEof_=drained_=false;playedFrames_=0;baseSeconds_=0;gain_=0;
+}
 void Engine::Seek(double seconds){
-    if(!opened_||!state_.error.empty())return;
+    if(!opened_||!state_.error.empty()||!decoder_.Seekable())return;
     if(!std::isfinite(seconds))seconds=0;
-    seconds=std::max(0.0,std::min(seconds,state_.duration));
+    seconds=std::max(0.0,state_.durationKnown?std::min(seconds,state_.duration):seconds);
     std::string error;bool paused=state_.paused;
     if(!sink_.Reset(error)){Fail(error);return;}
     if(!decoder_.Seek(seconds)){Fail(decoder_.Error());return;}
@@ -35,7 +40,10 @@ void Engine::Tick(){
     if(!opened_||!state_.error.empty()||state_.ended)return;
     uint64_t played=0;std::string error;
     if(!sink_.Poll(played,error)){Fail(error);return;}
-    playedFrames_+=played;state_.seconds=std::min(state_.duration,baseSeconds_+playedFrames_/48000.0);
+    playedFrames_+=played;state_.seconds=baseSeconds_+playedFrames_/48000.0;
+    if(state_.durationKnown)state_.seconds=std::min(state_.duration,state_.seconds);
+    if(decoder_.DurationKnown()){state_.durationKnown=true;state_.duration=decoder_.Duration();}
+    state_.buffering=decoder_.Buffering();state_.seekable=decoder_.Seekable();
     if(state_.paused)return;
     while(sink_.Room()&&!drained_){
         int16_t output[1024*2],input[2048*2];size_t made=0;
@@ -53,6 +61,6 @@ void Engine::Tick(){
             if(!sink_.Submit(output,made,error)){Fail(error);return;}
         }
     }
-    if(drained_&&sink_.Empty()){state_.ended=true;state_.seconds=state_.duration;state_.completion=++completionCounter_;}
+    if(drained_&&sink_.Empty()){state_.ended=true;if(!state_.durationKnown){state_.duration=state_.seconds;state_.durationKnown=true;}state_.seconds=state_.duration;state_.completion=++completionCounter_;}
 }
 }
