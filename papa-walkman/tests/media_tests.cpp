@@ -32,6 +32,130 @@ static std::string tag(std::string body, int v = 3) {
   return h + body;
 }
 
+static bool indexRegressions() {
+  int failed = 0;
+  auto expect = [&](bool value, const char *name) {
+    if (!value) {
+      ++failed;
+      std::cerr << "INDEX FAIL: " << name << "\n";
+    }
+  };
+  const std::string path = "build-host/media-index.json";
+  std::remove(path.c_str());
+  std::remove((path + ".bak").c_str());
+  std::string error;
+  Track t;
+  t.path = "/music/song.mp3";
+  t.id = "sd:test";
+  t.title = "曲";
+  t.artist = "歌手";
+  t.album = "专辑";
+  t.cover = "/cache/a.jpg";
+  t.lyrics = "/music/song.lrc";
+  t.sourceId = "sd";
+  t.fileSize = 9007199254740993ull;
+  t.modified = 18446744073709551615ull;
+  std::vector<Track> original{t}, result;
+  expect(SaveLibraryIndex(path, original, &error) &&
+             LoadLibraryIndex(path, result, &error),
+         "index round trip");
+  expect(result.size() == 1 && result[0].fileSize == t.fileSize &&
+             result[0].modified == t.modified && result[0].id == t.id &&
+             result[0].cover == t.cover && result[0].lyrics == t.lyrics &&
+             result[0].album == t.album,
+         "full Track and exact uint64 fields");
+  MediaState state;
+  state.resume = {t, 3, Mode::Shuffle, 50, true};
+  state.playlists.push_back({"p", "p", original});
+  MediaState restored;
+  expect(SaveMediaState("build-host/media-index-state.json", state, &error) &&
+             LoadMediaState("build-host/media-index-state.json", restored,
+                            &error) &&
+             restored.resume.track.modified == t.modified &&
+             restored.playlists[0].tracks[0].fileSize == t.fileSize,
+         "state helpers retain exact stamps");
+  put(path, R"({"version":1,"tracks":[{"id":"sd:old","path":"a"}]})");
+  expect(LoadLibraryIndex(path, result, &error) && result.size() == 1 &&
+             result[0].fileSize == 0 && result[0].modified == 0,
+         "old JSON defaults stamps to zero");
+  for (const char *body : {R"({})", R"({"id":"x","path":"a","fileSize":-1})",
+                           R"({"id":"x","path":"a","modified":1.5})",
+                           R"({"id":"x","path":"a","fileSize":"10"})"}) {
+    put(path, std::string("{\"version\":1,\"tracks\":[") + body + "]}");
+    result = original;
+    expect(!LoadLibraryIndex(path, result, &error) && result.size() == 1 &&
+               result[0].id == t.id,
+           "invalid entry preserves output");
+  }
+  std::vector<Track> limit(10000, t);
+  expect(SaveLibraryIndex(path, limit, &error) &&
+             LoadLibraryIndex(path, result, &error) && result.size() == 10000,
+         "10000-entry positive boundary");
+  limit.push_back(t);
+  expect(!SaveLibraryIndex(path, limit, &error), "save 10001 rejected");
+  std::string huge = R"({"version":1,"tracks":[)";
+  for (int i = 0; i < 10001; ++i) {
+    if (i)
+      huge += ',';
+    huge += R"({"path":"a","id":"x"})";
+  }
+  huge += "]}";
+  std::remove((path + ".bak").c_str());
+  put(path, huge);
+  result = original;
+  expect(!LoadLibraryIndex(path, result, &error) && result[0].id == t.id,
+         "load 10001 rejected before materialization");
+  Track oversized = t;
+  oversized.title = std::string(8 * 1024 * 1024, 'x');
+  expect(!SaveLibraryIndex(path, {oversized}, &error), "save >8MiB rejected");
+  put(path, std::string(8 * 1024 * 1024 + 1, ' '));
+  result = original;
+  expect(!LoadLibraryIndex(path, result, &error) && result[0].id == t.id,
+         "load >8MiB rejected");
+  expect(SaveLibraryIndex(path, original, &error) &&
+             SaveLibraryIndex(path, original, &error),
+         "backup fixture");
+  put(path, "{");
+  expect(LoadLibraryIndex(path, result, &error) &&
+             result[0].fileSize == t.fileSize,
+         "corrupt primary backup recovery");
+  put(path, R"({"version":1,"tracks":[{}]})");
+  expect(LoadLibraryIndex(path, result, &error) &&
+             result[0].modified == t.modified,
+         "semantic primary backup recovery");
+  expect(!SaveLibraryIndex(path, {Track{}}, &error) &&
+             LoadLibraryIndex(path, result, &error) && result[0].id == t.id,
+         "failed save preserves valid backup");
+
+  Track cloud = t;
+  cloud.id = "cloud:s:one";
+  cloud.path = "https://a/song.mp3";
+  cloud.source = SourceKind::Cloud;
+  cloud.sourceId = "s";
+  cloud.albumArtist = "Artist";
+  cloud.discNumber = 2;
+  cloud.trackNumber = 3;
+  cloud.duration = 123.5;
+  const std::string mixed = "build-host/media-index-mixed.json";
+  expect(SaveLibraryIndex(mixed, {t, cloud}, &error) &&
+             LoadLibraryIndex(mixed, result, &error) && result.size() == 2 &&
+             result[0].source == SourceKind::SD &&
+             result[1].source == SourceKind::Cloud &&
+             result[1].sourceId == "s" && result[1].path == cloud.path &&
+             result[1].duration == 123.5 &&
+             result[1].albumArtist == cloud.albumArtist &&
+             result[1].trackNumber == 3 && result[1].discNumber == 2,
+         "mixed index full metadata and source preserved");
+  expect(SaveLibraryIndex(mixed, {}, &error) &&
+             LoadLibraryIndex(mixed, result, &error) && result.empty(),
+         "empty index round trip");
+  oversized.title = std::string(1536 * 1024, char(1));
+  expect(!SaveLibraryIndex(mixed, {oversized}, &error) &&
+             LoadLibraryIndex(mixed, result, &error) && result.empty(),
+         "escaped bytes count toward budget before allocation or mutation");
+  std::cout << "index regressions: " << failed << " failures\n";
+  return failed == 0;
+}
 static bool reviewRegressions() {
   int failed = 0;
   auto expect = [&](bool result, const char *name) {
@@ -174,6 +298,8 @@ int main(int argc, char **argv) {
     return 0;
   }
 
+  if (!indexRegressions())
+    return 1;
   if (!reviewRegressions())
     return 1;
   auto l = ParseLyrics("\xef\xbb\xbf[ar:Test]\n[offset:250]\n[00:02.50][00:01."

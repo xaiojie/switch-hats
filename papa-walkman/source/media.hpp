@@ -76,6 +76,15 @@ bool SaveMediaState(const std::string &path, const MediaState &state,
                     std::string *error = nullptr);
 bool LoadMediaState(const std::string &path, MediaState &state,
                     std::string *error = nullptr);
+// SD/cloud metadata index: {version:1,tracks:[full Track]}. Optional uint64
+// fileSize/modified fields default to zero in old JSON and round-trip exactly.
+// <=10000 tracks, <=8 MiB, same parser quota and .bak recovery as media state.
+// Invalid entries are rejected before materialization; failed loads preserve
+// output.
+bool SaveLibraryIndex(const std::string &path, const std::vector<Track> &tracks,
+                      std::string *error = nullptr);
+bool LoadLibraryIndex(const std::string &path, std::vector<Track> &tracks,
+                      std::string *error = nullptr);
 bool LoadSources(const std::string &path, std::vector<MediaSource> &sources,
                  std::string *error = nullptr);
 bool SaveSources(const std::string &path,

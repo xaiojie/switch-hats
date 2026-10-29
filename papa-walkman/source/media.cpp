@@ -377,7 +377,9 @@ std::string trackJson(const Track &t) {
          ",\"sourceId\":" + quote(t.sourceId) +
          ",\"trackNumber\":" + number(t.trackNumber) +
          ",\"discNumber\":" + number(t.discNumber) +
-         ",\"duration\":" + number(t.duration) + ",\"source\":" +
+         ",\"duration\":" + number(t.duration) +
+         ",\"fileSize\":" + std::to_string(t.fileSize) +
+         ",\"modified\":" + std::to_string(t.modified) + ",\"source\":" +
          quote(t.source == SourceKind::Cloud ? "Cloud" : "SD") + "}";
 }
 Track trackRead(yyjson_val *v) {
@@ -394,6 +396,8 @@ Track trackRead(yyjson_val *v) {
   t.trackNumber = integer(v, "trackNumber");
   t.discNumber = integer(v, "discNumber");
   t.duration = std::max(0., num(v, "duration"));
+  t.fileSize = yyjson_get_uint(yyjson_obj_get(v, "fileSize"));
+  t.modified = yyjson_get_uint(yyjson_obj_get(v, "modified"));
   t.source = str(v, "source") == "Cloud" ? SourceKind::Cloud : SourceKind::SD;
   return t;
 }
@@ -419,6 +423,23 @@ bool stateTrackShape(yyjson_val *v) {
     auto x = yyjson_obj_get(v, key);
     if (x && (!yyjson_is_num(x) || !std::isfinite(yyjson_get_num(x)) ||
               yyjson_get_num(x) < 0))
+      return false;
+  }
+  for (const char *key : {"fileSize", "modified"}) {
+    auto x = yyjson_obj_get(v, key);
+    if (x && !yyjson_is_uint(x))
+      return false;
+  }
+  return true;
+}
+bool indexShape(yyjson_val *r) {
+  auto tracks = yyjson_obj_get(r, "tracks");
+  if (!yyjson_is_arr(tracks) || yyjson_arr_size(tracks) > CountLimit)
+    return false;
+  size_t i, n;
+  yyjson_val *v;
+  yyjson_arr_foreach(tracks, i, n, v) {
+    if (!stateTrackShape(v))
       return false;
   }
   return true;
@@ -483,6 +504,8 @@ bool documentShape(yyjson_val *r, const char *key, bool object) {
   if (!validVersion(r))
     return false;
   if (std::strcmp(key, "favorites") == 0 && !stateShape(r))
+    return false;
+  if (std::strcmp(key, "tracks") == 0 && !object && !indexShape(r))
     return false;
   auto value = yyjson_obj_get(r, key);
   return object ? yyjson_is_obj(value) : yyjson_is_arr(value);
@@ -1230,6 +1253,90 @@ bool LoadMediaState(const std::string &p, MediaState &s, std::string *e) {
   s = std::move(out);
   if (e)
     e->clear();
+  return true;
+}
+
+// Exact serialized size preflight avoids allocating a many-MiB escaped row
+// merely to discover it exceeds the remaining index budget.
+static bool trackFitsIndex(const Track &t, size_t remaining) {
+  Track shell;
+  shell.album.clear();
+  shell.trackNumber = t.trackNumber;
+  shell.discNumber = t.discNumber;
+  shell.duration = t.duration;
+  shell.fileSize = t.fileSize;
+  shell.modified = t.modified;
+  shell.source = t.source;
+  size_t size = trackJson(shell).size();
+  if (size > remaining)
+    return false;
+  for (const std::string *field :
+       {&t.path, &t.title, &t.artist, &t.id, &t.album, &t.albumArtist, &t.cover,
+        &t.lyrics, &t.sourceId}) {
+    bool valid = true;
+    for (size_t i = 0; i < field->size();) {
+      uint32_t cp = nextUtf(*field, i, valid);
+      size_t bytes = cp < 32                  ? 6
+                     : (cp == 34 || cp == 92) ? 2
+                     : cp < 128               ? 1
+                     : cp < 2048              ? 2
+                     : cp < 65536             ? 3
+                                              : 4;
+      if (bytes > remaining - size)
+        return false;
+      size += bytes;
+    }
+  }
+  return true;
+}
+bool SaveLibraryIndex(const std::string &path, const std::vector<Track> &tracks,
+                      std::string *error) {
+  auto fail = [&](const char *message) {
+    if (error)
+      *error = message;
+    return false;
+  };
+  if (tracks.size() > CountLimit)
+    return fail("index track count exceeded");
+  for (const auto &t : tracks)
+    if (!nativeTrackShape(t))
+      return fail("invalid index track");
+  std::string text = "{\"version\":1,\"tracks\":[";
+  for (size_t i = 0; i < tracks.size(); ++i) {
+    if (i)
+      text += ',';
+    if (text.size() + 2 > JsonLimit ||
+        !trackFitsIndex(tracks[i], JsonLimit - text.size() - 2))
+      return fail("index size exceeded");
+    text += trackJson(tracks[i]);
+  }
+  text += "]}";
+  return atomicSave(path, text, error, "tracks");
+}
+bool LoadLibraryIndex(const std::string &path, std::vector<Track> &tracks,
+                      std::string *error) {
+  std::string text;
+  if (!recoverRead(path, text, "tracks")) {
+    if (error)
+      *error = "index unavailable or invalid";
+    return false;
+  }
+  auto doc = json(text);
+  if (!doc) {
+    if (error)
+      *error = "index parse failed";
+    return false;
+  }
+  // recoverRead validates the complete array before any Tracks are constructed.
+  auto values = yyjson_obj_get(yyjson_doc_get_root(doc.get()), "tracks");
+  std::vector<Track> result;
+  result.reserve(yyjson_arr_size(values));
+  size_t i, n;
+  yyjson_val *v;
+  yyjson_arr_foreach(values, i, n, v) { result.push_back(trackRead(v)); }
+  tracks = std::move(result);
+  if (error)
+    error->clear();
   return true;
 }
 bool LoadSources(const std::string &p, std::vector<MediaSource> &s,
