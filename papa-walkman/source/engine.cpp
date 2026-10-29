@@ -24,6 +24,9 @@ void Engine::Seek(double seconds){
     std::string error;bool paused=state_.paused;
     if(!sink_.Reset(error)){Fail(error);return;}
     if(!decoder_.Seek(seconds)){Fail(decoder_.Error());return;}
+    state_.durationKnown=decoder_.DurationKnown();state_.duration=decoder_.Duration();
+    state_.seekable=decoder_.Seekable();state_.buffering=decoder_.Buffering();
+    if(state_.durationKnown)seconds=std::min(seconds,state_.duration);
     resampler_.Reset(decoder_.Rate(),decoder_.Channels());
     sourceEof_=drained_=false;playedFrames_=0;baseSeconds_=seconds;gain_=0;
     state_.seconds=seconds;state_.ended=false;Pause(paused);

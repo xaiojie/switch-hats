@@ -26,6 +26,22 @@ int review(const std::string& base,const std::string& mode){
  if(mode=="late-cancel") {std::atomic<uint64_t> token{1};Decoder d;auto status=std::make_shared<StreamStatus>();CHECK(d.Open(base+"/late-cancel",&token,1,status));std::thread reader([&](){int16_t pcm[4096];while(d.Read(pcm,2048)){};});std::this_thread::sleep_for(std::chrono::milliseconds(150));auto start=std::chrono::steady_clock::now();token=2;reader.join();CHECK(std::chrono::steady_clock::now()-start<std::chrono::milliseconds(500));CHECK(!d.Error().empty());CHECK(!status->Snapshot().eof);d.Close();}
  if(mode=="range-short") {for(auto path:{"/range-short","/range-chunk-short"}){ByteSource s;CHECK(s.Open(base+path));while(s.Read(b,sizeof b)){}CHECK(!s.Status().error.empty());CHECK(!s.Status().eof);}}
  if(mode=="seek") {ByteSource s;CHECK(s.Open(base+"/fallback"));CHECK(s.Read(b,128)>0);CHECK(!s.Seek(s.Status().totalBytes+1));CHECK(s.Seek(s.Status().totalBytes));CHECK(s.Read(b,1)==0);CHECK(s.Status().error.empty());s.Close();CHECK(s.Open(base+"/ignored"));while(s.Read(b,sizeof b)){}auto length=s.Status().totalBytes;CHECK(length>0);CHECK(!s.Seek(length+1));CHECK(s.Seek(length));CHECK(s.Read(b,1)==0);}
+ if(mode=="cached-resume") {
+  auto before=FetchUrl(base+"/resume-count",100);CHECK(before.error.empty());int count=std::stoi(std::string(before.bytes.begin(),before.bytes.end()));
+  std::atomic<uint64_t> token{1};auto status=std::make_shared<StreamStatus>();Sink sink;Engine engine(sink);
+  CHECK(engine.Open(base+"/resume-unknown",&token,1,status));engine.Pause(true);CHECK(!engine.State().durationKnown);
+  for(int i=0;i<1000&&!status->Snapshot().eof;++i)std::this_thread::sleep_for(std::chrono::milliseconds(2));CHECK(status->Snapshot().eof);
+  engine.Tick();CHECK(engine.State().paused);CHECK(engine.State().seconds==0);CHECK(engine.State().seekable);CHECK(!engine.State().durationKnown);
+  engine.Seek(1);CHECK(engine.State().error.empty());CHECK(engine.State().paused);CHECK(engine.State().durationKnown);CHECK(engine.State().duration>1.9&&engine.State().duration<2.2);CHECK(engine.State().seconds==1);
+  engine.Seek(1.5);CHECK(engine.State().seconds==1.5);engine.Seek(999);CHECK(engine.State().seconds==engine.State().duration);engine.Seek(1);
+  engine.Pause(false);engine.Tick();engine.Tick();CHECK(engine.State().seconds>1);CHECK(!engine.State().ended);CHECK(engine.State().error.empty());engine.Stop();
+  auto after=FetchUrl(base+"/resume-count",100);CHECK(after.error.empty());CHECK(std::stoi(std::string(after.bytes.begin(),after.bytes.end()))==count+1);
+  StreamOptions options;options.prefetchBytes=32*1024*1024;
+  auto mediumStatus=std::make_shared<StreamStatus>();Sink mediumSink;Engine medium(mediumSink);CHECK(medium.Open(base+"/resume-medium",nullptr,0,mediumStatus,options));medium.Pause(true);for(int i=0;i<2000&&!mediumStatus->Snapshot().eof;++i)std::this_thread::sleep_for(std::chrono::milliseconds(2));CHECK(mediumStatus->Snapshot().eof);medium.Tick();CHECK(medium.State().seekable);medium.Seek(1);CHECK(medium.State().durationKnown);CHECK(medium.State().duration>60);CHECK(medium.State().seconds==1);medium.Stop();
+  StreamOptions largeOptions;largeOptions.prefetchBytes=64*1024*1024;auto oversizedStatus=std::make_shared<StreamStatus>();Decoder oversized;CHECK(oversized.Open(base+"/resume-oversize",nullptr,0,oversizedStatus,largeOptions));for(int i=0;i<4000&&!oversizedStatus->Snapshot().eof;++i)std::this_thread::sleep_for(std::chrono::milliseconds(2));CHECK(oversizedStatus->Snapshot().eof);CHECK(!oversized.Seekable());CHECK(!oversized.Seek(1));CHECK(oversized.Error().find("32 MiB")!=std::string::npos);CHECK(!oversized.DurationKnown());oversized.Close();
+  Decoder frameLimited;auto frameStatus=std::make_shared<StreamStatus>();CHECK(frameLimited.Open(base+"/resume-frame-limit",nullptr,0,frameStatus,largeOptions));for(int i=0;i<4000&&!frameStatus->Snapshot().eof;++i)std::this_thread::sleep_for(std::chrono::milliseconds(2));CHECK(frameStatus->Snapshot().eof);CHECK(frameLimited.Seekable());CHECK(!frameLimited.Seek(1));CHECK(frameLimited.Error().find("index exceeds resource limit")!=std::string::npos);CHECK(!frameLimited.DurationKnown());frameLimited.Close();
+  Decoder cancelled;CHECK(cancelled.Open(base+"/resume-unknown",&token,1,status));for(int i=0;i<1000&&!status->Snapshot().eof;++i)std::this_thread::sleep_for(std::chrono::milliseconds(2));CHECK(status->Snapshot().eof);token=2;CHECK(!cancelled.Seek(1));CHECK(!cancelled.Error().empty());cancelled.Close();
+ }
  if(mode=="lifetime") {
 #ifdef _WIN32
   // A protected page makes a detached worker dereference of the retired token fatal.
@@ -67,5 +83,6 @@ int main(int argc,char**argv){
  Sink sink;Engine engine(sink);CHECK(engine.Open(base+"/unknown"));CHECK(!engine.State().durationKnown);
  for(int i=0;i<200&&!engine.State().ended;++i)engine.Tick();CHECK(engine.State().ended);CHECK(engine.State().seconds>1.9&&engine.State().seconds<2.2);CHECK(engine.State().completion==1);CHECK(engine.State().error.empty());
  engine.Volume(62);engine.Stop();CHECK(engine.State().path.empty());CHECK(engine.State().paused);CHECK(engine.State().volume==62);CHECK(sink.Empty());engine.Tick();CHECK(!engine.State().ended);
+ CHECK(review(base,"cached-resume")==0);
  std::puts("PASS controlled HTTP startup, unknown duration, bounds, redirects, Range, truncation, 404, cancellation");
 }

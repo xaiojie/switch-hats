@@ -1,4 +1,5 @@
 import http.server, pathlib, sys, time
+resume_requests=0
 tone=pathlib.Path(sys.argv[1]).read_bytes()
 long=tone*32
 pathlib.Path('build-host/stream/long.mp3').write_bytes(long)
@@ -7,13 +8,20 @@ tagged[36:49]=b'Xing'+(1).to_bytes(4,'big')+(4).to_bytes(4,'big')+b'\0'
 class Handler(http.server.BaseHTTPRequestHandler):
  def log_message(self,*args): pass
  def do_GET(self):
+  global resume_requests
+  if self.path=='/resume-count':
+   data=str(resume_requests).encode();self.send_response(200);self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data);return
+  if self.path=='/resume-unknown':resume_requests+=1
   if self.path=='/missing': self.send_error(404); return
   if self.path=='/redirect': self.send_response(302);self.send_header('Location','/tone');self.end_headers();return
   offset=int(self.headers.get('Range','bytes=0-').split('=')[1].split('-')[0])
   if self.path=='/range416' and offset:self.send_error(416);return
   data=tone*(32 if self.path in ('/slow','/large') else 1)
-  ranged='Range' in self.headers and self.path not in ('/ignored','/unknown','/slow','/truncated')
+  ranged='Range' in self.headers and self.path not in ('/ignored','/unknown','/resume-unknown','/resume-medium','/resume-oversize','/resume-frame-limit','/slow','/truncated')
   if self.path=='/fragment':data=long
+  if self.path=='/resume-medium':data=long
+  if self.path=='/resume-oversize':data=tone*1100
+  if self.path=='/resume-frame-limit':data=(bytes.fromhex('fffb1000')+bytes(100))*270000
   if self.path in ('/late','/late-cancel'):data=bytes(tagged)
   if self.path=='/fallback' and offset:ranged=False
   full=len(data)
@@ -24,7 +32,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
   self.send_header('Connection','close');self.close_connection=True
   self.send_header('ETag','changed' if self.path=='/changed' and offset else 'original')
   if ranged:self.send_header('Content-Range',f'bytes {1 if self.path=="/bad-range" else offset}-{full-1}/{full}')
-  if self.path not in ('/unknown','/range-short','/range-chunk-short'):self.send_header('Content-Length',str(len(data)+(1000 if self.path=='/truncated' else 0)))
+  if self.path not in ('/unknown','/resume-unknown','/resume-medium','/resume-oversize','/resume-frame-limit','/range-short','/range-chunk-short'):self.send_header('Content-Length',str(len(data)+(1000 if self.path=='/truncated' else 0)))
   self.end_headers()
   try:
    if self.path=='/stalled':time.sleep(5)

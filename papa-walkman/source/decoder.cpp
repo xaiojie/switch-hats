@@ -13,13 +13,20 @@
 #include "minimp3_ex.h"
 static_assert(MINIMP3_IO_SIZE>MINIMP3_BUF_SIZE,"MP3 IO buffer must hold multiple frames");
 namespace papa {
+// Bound worst-case frame-index allocation as well as cached input size.
+static constexpr uint64_t CachedIndexLimit=32ull*1024*1024;
+static constexpr size_t CachedIndexFrames=262144;
 struct Decoder::Impl {
-    ByteSource source; bool remote=false; mp3dec_ex_t dec{}; mp3dec_io_t io{}; bool open=false;
+    ByteSource source; bool remote=false,cachedIndex=false,buildingCachedIndex=false,indexLimit=false; mp3dec_ex_t dec{}; mp3dec_io_t io{}; bool open=false;
     std::string error;uint64_t readFrames=0,finalFrames=0;
     const std::atomic<uint64_t>* cancel=nullptr; uint64_t expected=0;
     bool Cancelled() const {return cancel&&cancel->load()!=expected;}
     static size_t Read(void* out,size_t size,void* user) {
         auto p=static_cast<Impl*>(user);
+        // Refuse an excessive index at IO boundaries, and reject any apparent EOF
+        // from this limit after open_cb returns. One 32KiB batch can cross the
+        // threshold, bounding geometric index capacity to 524288 entries (8MiB).
+        if(p->buildingCachedIndex&&p->dec.index.num_frames>=CachedIndexFrames){p->indexLimit=true;return 0;}
         size_t filled=0;
         while(filled<size&&!p->Cancelled()){
             size_t n=p->source.Read(static_cast<unsigned char*>(out)+filled,size-filled);
@@ -52,23 +59,42 @@ bool Decoder::Open(const std::string& path,const std::atomic<uint64_t>* cancel,u
 }
 void Decoder::Close(){
     if(p_->open)mp3dec_ex_close(&p_->dec);
-    p_->source.Close();p_->open=false;p_->dec={};
+    p_->source.Close();p_->open=false;p_->cachedIndex=false;p_->dec={};
 }
 bool Decoder::Seek(double seconds){
     if(!p_->open)return false;
+    if(p_->Cancelled()){p_->error="Request cancelled";return false;}
     if(!std::isfinite(seconds))seconds=0;
     seconds=std::max(0.0,DurationKnown()?std::min(seconds,Duration()):seconds);
     if(p_->remote){
-        auto st=p_->source.Status();if(st.cachedStart||!st.eof)return false;
-        if(!DurationKnown())return false;
-        mp3dec_ex_close(&p_->dec);p_->dec={};
-        if(mp3dec_ex_open_cb(&p_->dec,&p_->io,MP3D_SEEK_TO_SAMPLE|MP3D_DO_NOT_SCAN)){p_->error="Cannot reopen cached MP3";return false;}
-        p_->readFrames=0;uint64_t remaining=static_cast<uint64_t>(seconds*Rate());int16_t discard[4096];
-        while(remaining){size_t n=Read(discard,static_cast<size_t>(std::min<uint64_t>(remaining,2048)));if(!n)break;remaining-=n;}
-        return p_->error.empty();
+        // Rebuild only against the unchanged, fully retained byte cache. No network seek.
+        auto status=p_->source.Status();
+        if(!DurationKnown()&&status.eof&&!status.cachedStart&&status.cachedEnd>CachedIndexLimit){p_->error="Cached MP3 exceeds 32 MiB seek-index limit; play from start";return false;}
+        if(!Seekable())return false;
+        if(!DurationKnown()&&!p_->cachedIndex){
+            mp3dec_ex_close(&p_->dec);p_->dec={};
+            p_->buildingCachedIndex=true;p_->indexLimit=false;
+            int result=mp3dec_ex_open_cb(&p_->dec,&p_->io,MP3D_SEEK_TO_SAMPLE);
+            p_->buildingCachedIndex=false;
+            bool tooLarge=p_->indexLimit||p_->dec.index.num_frames>=CachedIndexFrames;
+            if(result||tooLarge||p_->Cancelled()||!p_->dec.samples){
+                mp3dec_ex_close(&p_->dec);p_->dec={};p_->open=false;
+                p_->error=p_->Cancelled()?"Request cancelled":(tooLarge?"Cached MP3 index exceeds resource limit; play from start":"Cannot index cached MP3");return false;
+            }
+            p_->cachedIndex=true;
+        }
+        seconds=std::max(0.0,std::min(seconds,Duration()));
+        if(!p_->cachedIndex){
+            mp3dec_ex_close(&p_->dec);p_->dec={};
+            if(mp3dec_ex_open_cb(&p_->dec,&p_->io,MP3D_SEEK_TO_SAMPLE|MP3D_DO_NOT_SCAN)){p_->error="Cannot reopen cached MP3";return false;}
+            p_->readFrames=0;uint64_t remaining=static_cast<uint64_t>(seconds*Rate());int16_t discard[4096];
+            while(remaining){size_t n=Read(discard,static_cast<size_t>(std::min<uint64_t>(remaining,2048)));if(!n)break;remaining-=n;}
+            return p_->error.empty();
+        }
     }
     uint64_t sample=static_cast<uint64_t>(seconds*Rate())*static_cast<uint64_t>(Channels());
     if(mp3dec_ex_seek(&p_->dec,std::min<uint64_t>(sample,p_->dec.samples))!=0){p_->error="跳转进度失败";return false;}
+    p_->readFrames=sample/static_cast<uint64_t>(Channels());
     p_->error.clear();return true;
 }
 size_t Decoder::Read(int16_t* samples,size_t frames){
@@ -86,7 +112,11 @@ int Decoder::Rate()const{return p_->open?p_->dec.info.hz:0;}
 int Decoder::Channels()const{return p_->open?p_->dec.info.channels:0;}
 double Decoder::Duration()const{return p_->open?(p_->dec.samples?static_cast<double>(p_->dec.samples)/Channels():static_cast<double>(p_->finalFrames))/Rate():0;}
 bool Decoder::DurationKnown()const{return p_->open&&(p_->dec.samples>0||p_->finalFrames>0);}
-bool Decoder::Seekable()const{auto s=p_->source.Status();return p_->open&&(!p_->remote||(s.eof&&!s.cachedStart&&DurationKnown()));}
+bool Decoder::Seekable()const{
+    auto s=p_->source.Status();
+    return p_->open&&!p_->Cancelled()&&(!p_->remote||(s.eof&&!s.cancelled&&s.error.empty()&&!s.cachedStart&&s.cachedEnd>0&&
+        (DurationKnown()||s.cachedEnd<=CachedIndexLimit)));
+}
 bool Decoder::Buffering()const{return p_->source.Status().buffering;}
 std::string Decoder::Error()const{return p_->error;}
 }
