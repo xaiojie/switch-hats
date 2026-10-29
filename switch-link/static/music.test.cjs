@@ -1,7 +1,8 @@
 const {listenForBrowser}=require('./browser-test-helpers.cjs');
 const test=require('node:test'),assert=require('node:assert/strict'),http=require('node:http'),fs=require('node:fs'),path=require('node:path');
 const {chromium}=require('playwright');
-test('music tab explicitly chooses directory, edits sources and reports sync rejection',{timeout:25000},async()=>{
+const lanHost=Object.values(require('node:os').networkInterfaces()).flat().find(item=>item&&item.family==='IPv4'&&!item.internal&&/^(192\.168\.|10\.)/.test(item.address))?.address||'127.0.0.1';
+test('music tab explicitly chooses directory, edits sources and works on insecure LAN HTTP',{timeout:40000},async()=>{
  let configured=false,saved=null; const calls=[];
  const state=()=>({root:configured?'C:\\Songs':'',library_id:configured?'chosen':'unconfigured',tracks:configured?[{id:'song',title:'晴天',artist:'周杰伦',album:'叶惠美',cover:'',lyrics:''}]:[],sources:saved||{version:1,sources:[]},overrides:{version:1,tracks:{}},available:true,catalog_url:'http://192.0.2.1:8080/music-library.json',m3u_url:'http://192.0.2.1:8080/music-list.m3u8'});
  const server=http.createServer(async(req,res)=>{const u=new URL(req.url,'http://localhost');const json=(d,status=200)=>{res.statusCode=status;res.setHeader('Content-Type','application/json');res.end(JSON.stringify(d));};let raw='';for await(const chunk of req)raw+=chunk;const data=raw?JSON.parse(raw):{};
@@ -13,10 +14,24 @@ test('music tab explicitly chooses directory, edits sources and reports sync rej
  if(u.pathname==='/api/music/sources'){saved={version:data.version,sources:data.sources};return json(saved);}
  if(u.pathname==='/api/music/sync'){calls.push(data);return json({ok:false,error:'任务正在进行，请等待完成'},409);}
  const file=path.join(__dirname,u.pathname==='/'?'index.html':u.pathname);if(!file.startsWith(__dirname)||!fs.existsSync(file)){res.statusCode=404;return res.end();}res.setHeader('Content-Type',file.endsWith('.js')?'application/javascript':file.endsWith('.css')?'text/css':'text/html');res.end(fs.readFileSync(file));});
- await listenForBrowser(server);const browser=await chromium.launch({channel:'msedge',headless:true});try{const page=await browser.newPage();page.setDefaultTimeout(5000);const errors=[];page.on('pageerror',e=>errors.push(e.message));await page.goto('http://127.0.0.1:'+server.address().port+'/#music',{waitUntil:'networkidle'});
+ await listenForBrowser(server,lanHost==='127.0.0.1'?'127.0.0.1':'0.0.0.0');const browser=await chromium.launch({channel:'msedge',headless:true,args:['--no-proxy-server']});try{const page=await browser.newPage();page.setDefaultTimeout(5000);const errors=[];page.on('pageerror',e=>errors.push(e.message));await page.goto('http://127.0.0.1:'+server.address().port+'/#music',{waitUntil:'networkidle'});
  await page.locator('#music-root').fill('C:\\Songs');await page.locator('#music-configure').click();await page.locator('#music-title').waitFor();assert.equal(await page.locator('#music-title').inputValue(),'晴天');assert.equal(calls[0].expected_library,'unconfigured');
  await page.locator('#music-add-source').click();await page.locator('[data-source-name]').fill('家里');await page.locator('[data-source-url]').fill('https://example.com/library.json');await page.locator('#music-save-sources').click();await page.locator('#music-message').filter({hasText:'来源已保存'}).waitFor();assert.equal(saved.sources[0].name,'家里');
  await page.locator('#music-sync').click();await page.locator('#music-message').filter({hasText:'任务正在进行'}).waitFor();assert.equal(calls[1].expected_device,'switch');assert.deepEqual(errors,[]);
  await page.setViewportSize({width:390,height:844});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
+ const lan=await browser.newPage({viewport:{width:390,height:844}});lan.setDefaultTimeout(5000);lan.on('pageerror',e=>errors.push(e.message));
+ await lan.addInitScript(()=>{document.execCommand=command=>{if(command==='copy'){window.testCopied=document.activeElement.value;return true;}return false;};});
+ if(lanHost==='127.0.0.1')await lan.addInitScript(()=>{Object.defineProperty(crypto,'randomUUID',{value:undefined});Object.defineProperty(navigator,'clipboard',{value:undefined});});
+ const lanResponse=await lan.goto('http://'+lanHost+':'+server.address().port+'/#music',{waitUntil:'networkidle'});assert.equal(lanResponse.status(),200);
+ if(lanHost!=='127.0.0.1')assert.equal(await lan.evaluate(()=>isSecureContext),false);
+ assert.equal(await lan.evaluate(()=>typeof crypto.randomUUID),'undefined');
+ await lan.locator('#music-add-source').waitFor().catch(async error=>{throw new Error(JSON.stringify({errors,url:lan.url(),body:(await lan.locator('body').innerText()).slice(0,200)})+'\n'+error.message);});
+ await lan.locator('#music-add-source').click();assert.equal(await lan.locator('[data-source-name]').count(),2);
+ await lan.locator('[data-source-name]').nth(1).fill('手机添加');await lan.locator('[data-source-url]').nth(1).fill('https://example.com/mobile.m3u');
+ await lan.locator('#music-save-sources').click();await lan.locator('#music-message').filter({hasText:'来源已保存'}).waitFor();
+ assert.equal(saved.sources[1].name,'手机添加');assert.notEqual(saved.sources[0].id,saved.sources[1].id);
+ await lan.locator('#music-copy-catalog').click();await lan.locator('#music-message').filter({hasText:'地址已复制'}).waitFor();
+ assert.equal(await lan.evaluate(()=>window.testCopied),state().catalog_url);
+ assert.deepEqual(errors,[]);
  }finally{await browser.close();server.closeAllConnections();await new Promise(r=>server.close(r));}
 });

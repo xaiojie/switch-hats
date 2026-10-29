@@ -115,6 +115,18 @@ class Application:
         temporary.replace(self.settings_path)
         return device
 
+    def web_urls(self, addresses=None):
+        host = self.host
+        if host in ('0.0.0.0', ''):
+            addresses = local_addresses() if addresses is None else addresses
+            urls = ['http://%s:%d/' % (address, self.port) for address in addresses]
+            return {'local_url': 'http://127.0.0.1:%d/' % self.port,
+                    'lan_url': urls[0] if urls else '', 'lan_urls': urls}
+        url = 'http://%s:%d/' % (host, self.port)
+        loopback = host in ('127.0.0.1', 'localhost')
+        return {'local_url': url, 'lan_url': '' if loopback else url,
+                'lan_urls': [] if loopback else [url]}
+
     def status(self):
         addresses = local_addresses()
         device = self.selected()
@@ -132,7 +144,9 @@ class Application:
                         job['stage'] = task['stage']
                         job['eta_seconds'] = task.get('eta_seconds')
         return {'app': 'Switch Link', 'version': __version__,
-                'lan_url': 'http://%s:%d/' % (self.host, self.port),
+                **self.web_urls(addresses),
+                'busy': bool(self.jobs.active() or self.http_jobs.active() or self.receiving_count),
+                'receiving_count': self.receiving_count,
                 'device': device,
                 'discovery': {'running': self.discovery.running, 'error': self.discovery.error},
                 'jobs': jobs, 'http_library': self.library_status()}

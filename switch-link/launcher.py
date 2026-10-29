@@ -1,4 +1,4 @@
-"""Open the companion, starting its local-only service when needed."""
+"""Open the companion, starting its LAN-enabled service when needed."""
 import json
 from pathlib import Path
 import subprocess

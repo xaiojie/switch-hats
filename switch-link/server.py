@@ -6,18 +6,23 @@ from switch_link.discovery import local_addresses
 from switch_link.library import HttpShare
 
 
-def main():
+def build_parser():
     parser = argparse.ArgumentParser(description='Switch Link 本地管理服务')
-    parser.add_argument('--host', default=None)
+    parser.add_argument('--host', default='0.0.0.0',
+                        help='管理网页监听地址，默认同时支持本机和局域网；127.0.0.1 为仅本机')
     parser.add_argument('--port', type=int, default=8088)
     parser.add_argument('--data', type=Path, default=Path(__file__).resolve().parent / 'data')
     parser.add_argument('--seed', action='append', default=[])
     parser.add_argument('--library', type=Path)
     parser.add_argument('--http-port', type=int, default=8080)
     parser.add_argument('--http-host', default='0.0.0.0')
-    args = parser.parse_args()
+    return parser
+
+
+def main():
+    args = build_parser().parse_args()
     addresses = local_addresses()
-    host = args.host or '127.0.0.1'
+    host = args.host or '0.0.0.0'
     existing_library = Path(__file__).resolve().parent.parent / 'game-library' / '游戏库'
     library_root = args.library or (existing_library if existing_library.is_dir() else args.data / 'library')
     app = Application(args.data, seeds=args.seed, library_root=library_root)
@@ -39,7 +44,10 @@ def main():
         if app.control_share.owned:
             app.http_jobs.configure(app.control_share.url)
     server = make_server(app, host, args.port)
-    print('Switch Link: http://%s:%d/' % (host, server.server_port), flush=True)
+    urls = app.web_urls(addresses)
+    print('Switch Link: ' + urls['local_url'], flush=True)
+    if urls['lan_url']:
+        print('LAN web: ' + urls['lan_url'], flush=True)
     print('HTTP library: ' + app.http_share.url + '/files/', flush=True)
     try:
         server.serve_forever()

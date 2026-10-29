@@ -19,8 +19,16 @@
  function preview(){let url=$('music-cover').value;if(url.startsWith('/music-file/'))url=(state.catalog_url||'').replace('/music-library.json','')+url;const allowed=/^https?:\/\//i.test(url);$('music-cover-preview').hidden=!allowed;if(allowed)$('music-cover-preview').src=url;else $('music-cover-preview').removeAttribute('src');}
  async function refresh(){state=await api('/api/music');sources=structuredClone(state.sources.sources);$('music-root').value=state.root;$('music-catalog-url').value=state.catalog_url;$('music-m3u-url').value=state.m3u_url;$('music-library-state').textContent=state.root?`${state.tracks.length} 首 · ${state.available?'局域网共享已就绪':'HTTP 音乐服务未启动'}`:'尚未选择音乐文件夹';sourceRows();trackRows();}
  $('music-configure').onclick=()=>run(async()=>{message('正在扫描音乐标签、封面和歌词…');state=await api('/api/music','PUT',{root:$('music-root').value,expected_library:state.library_id});await refresh();message('音乐库已更新');});
- for(const [id,key] of [['music-copy-catalog','catalog_url'],['music-copy-m3u','m3u_url']])$(id).onclick=()=>run(async()=>{if(!state[key])throw Error('HTTP 音乐共享服务尚未启动');await navigator.clipboard.writeText(state[key]);message('地址已复制');});
- const addSource=(name='',url='')=>{sources.push({id:'source-'+crypto.randomUUID(),name,url,enabled:true});sourceRows();};
+ async function copyAddress(key,inputId){
+  if(!state[key])throw Error('HTTP 音乐共享服务尚未启动');
+  let copied=false;
+  if(typeof navigator.clipboard?.writeText==='function'){try{await navigator.clipboard.writeText(state[key]);copied=true;}catch{}}
+  if(!copied){const input=$(inputId);input.focus();input.select();input.setSelectionRange(0,input.value.length);try{copied=document.execCommand?.('copy')===true;}catch{}}
+  message(copied?'地址已复制':'地址已选中，请长按复制');
+ }
+ for(const [id,key,input] of [['music-copy-catalog','catalog_url','music-catalog-url'],['music-copy-m3u','m3u_url','music-m3u-url']])$(id).onclick=()=>run(()=>copyAddress(key,input));
+ const sourceId=()=>globalThis.crypto?.randomUUID?.()||(Date.now().toString(36)+'-'+Math.random().toString(36).slice(2,14));
+ const addSource=(name='',url='')=>{sources.push({id:'source-'+sourceId(),name,url,enabled:true});sourceRows();};
  $('music-add-source').onclick=()=>addSource();$('music-add-local').onclick=()=>{if(!state?.catalog_url)return message('HTTP 音乐共享服务尚未启动',true);addSource('此电脑音乐库',state.catalog_url);};
  $('music-save-sources').onclick=()=>run(async()=>{state.sources=await api('/api/music/sources','PUT',{version:1,sources,expected_library:state.library_id});message('来源已保存，等待同步到主机');});
  $('music-track-kind').onchange=trackRows;$('music-track').onchange=editTrack;$('music-cover').oninput=preview;
