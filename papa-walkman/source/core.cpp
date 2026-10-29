@@ -4,9 +4,10 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
-#include <dirent.h>
-#include <fstream>
 #include <sys/stat.h>
+#ifndef _WIN32
+#include <dirent.h>
+#endif
 #ifdef _WIN32
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -14,6 +15,46 @@
 #include <windows.h>
 #endif
 namespace papa {
+namespace {
+#ifdef _WIN32
+std::wstring WidePath(const std::string& path) {
+    int n=MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,path.c_str(),-1,nullptr,0);
+    if(n<=0)return {};
+    std::wstring result(static_cast<size_t>(n),L'\0');
+    MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,path.c_str(),-1,&result[0],n);
+    result.resize(static_cast<size_t>(n-1));return result;
+}
+std::string Utf8Path(const wchar_t* path) {
+    int n=WideCharToMultiByte(CP_UTF8,0,path,-1,nullptr,0,nullptr,nullptr);
+    if(n<=0)return {};
+    std::string result(static_cast<size_t>(n),'\0');
+    WideCharToMultiByte(CP_UTF8,0,path,-1,&result[0],n,nullptr,nullptr);
+    result.resize(static_cast<size_t>(n-1));return result;
+}
+#endif
+FILE* OpenPath(const std::string& path,const char* mode) {
+#ifdef _WIN32
+    auto p=WidePath(path);std::wstring m;while(*mode)m.push_back(static_cast<wchar_t>(*mode++));
+    return p.empty()?nullptr:_wfopen(p.c_str(),m.c_str());
+#else
+    return std::fopen(path.c_str(),mode);
+#endif
+}
+int RemovePath(const std::string& path) {
+#ifdef _WIN32
+    return DeleteFileW(WidePath(path).c_str())?0:-1;
+#else
+    return std::remove(path.c_str());
+#endif
+}
+int RenamePath(const std::string& from,const std::string& to) {
+#ifdef _WIN32
+    return MoveFileW(WidePath(from).c_str(),WidePath(to).c_str())?0:-1;
+#else
+    return std::rename(from.c_str(),to.c_str());
+#endif
+}
+}
 const char* ModeName(Mode mode) {
     switch(mode) {
         case Mode::Sequential: return "顺序播放";
@@ -25,56 +66,81 @@ const char* ModeName(Mode mode) {
 }
 Settings LoadSettings(const std::string& path) {
     Settings result;
-    std::ifstream file(path); std::string line;
-    if(!file.is_open()){file.clear();file.open(path+".bak");}
-    while (std::getline(file,line)) {
+    FILE* file=OpenPath(path,"rb");
+    if(!file)file=OpenPath(path+".bak","rb");
+    if(!file)return result;
+    char line[256];
+    while (std::fgets(line,sizeof(line),file)) {
         int value;
-        if (std::sscanf(line.c_str(),"volume=%d",&value)==1) result.volume=std::max(0,std::min(100,value));
-        else if (std::sscanf(line.c_str(),"mode=%d",&value)==1 && value>=0 && value<=3) result.mode=static_cast<Mode>(value);
+        if (std::sscanf(line,"volume=%d",&value)==1) result.volume=std::max(0,std::min(100,value));
+        else if (std::sscanf(line,"mode=%d",&value)==1 && value>=0 && value<=3) result.mode=static_cast<Mode>(value);
     }
+    std::fclose(file);
     return result;
 }
 bool SaveSettings(const std::string& path, Settings value) {
     std::string temp=path+".tmp";
-    FILE* file=std::fopen(temp.c_str(),"wb"); if(!file) return false;
+    FILE* file=OpenPath(temp,"wb"); if(!file) return false;
     bool ok=std::fprintf(file,"volume=%d\nmode=%d\n",std::max(0,std::min(100,value.volume)),static_cast<int>(value.mode))>0;
     ok=std::fclose(file)==0 && ok;
     // Horizon fsdev rename does not replace existing files. Keep a recoverable old copy.
-    std::string backup=path+".bak";struct stat st{};bool haveOld=stat(path.c_str(),&st)==0;
+    std::string backup=path+".bak";bool haveOld=false,isRegular=false;
+#ifdef _WIN32
+    DWORD flags=GetFileAttributesW(WidePath(path).c_str());haveOld=flags!=INVALID_FILE_ATTRIBUTES;isRegular=haveOld&&!(flags&FILE_ATTRIBUTE_DIRECTORY);
+#else
+    struct stat st{};haveOld=stat(path.c_str(),&st)==0;isRegular=haveOld&&S_ISREG(st.st_mode);
+#endif
     if(ok&&haveOld){
-        if(!S_ISREG(st.st_mode))ok=false;
-        else{std::remove(backup.c_str());ok=std::rename(path.c_str(),backup.c_str())==0;}
+        if(!isRegular)ok=false;
+        else{RemovePath(backup);ok=RenamePath(path,backup)==0;}
     }
     if(ok){
-        ok=std::rename(temp.c_str(),path.c_str())==0;
-        if(!ok&&haveOld)std::rename(backup.c_str(),path.c_str());
-        if(ok)std::remove(backup.c_str());
+        ok=RenamePath(temp,path)==0;
+        if(!ok&&haveOld)RenamePath(backup,path);
+        if(ok)RemovePath(backup);
     }
-    if(!ok) std::remove(temp.c_str());
+    if(!ok) RemovePath(temp);
     return ok;
 }
 static void Scan(const std::string& root, std::vector<Track>& out, size_t limit, int depth) {
     if (depth<0||out.size()>=limit) return;
-    DIR* dir=opendir(root.c_str()); if(!dir) return;
     std::vector<std::string> entries;
+#ifdef _WIN32
+    WIN32_FIND_DATAW entry{};HANDLE handle=FindFirstFileW(WidePath(root+"/*").c_str(),&entry);
+    if(handle==INVALID_HANDLE_VALUE)return;
+    do{if(entry.cFileName[0]!=L'.'&&!(entry.dwFileAttributes&(FILE_ATTRIBUTE_REPARSE_POINT|FILE_ATTRIBUTE_HIDDEN)))entries.push_back(Utf8Path(entry.cFileName));}while(FindNextFileW(handle,&entry));
+    FindClose(handle);
+#else
+    DIR* dir=opendir(root.c_str()); if(!dir) return;
     while(auto ent=readdir(dir)) if(ent->d_name[0]!='.') entries.emplace_back(ent->d_name);
-    closedir(dir); std::sort(entries.begin(),entries.end());
+    closedir(dir);
+#endif
+    std::sort(entries.begin(),entries.end());
     for(const auto& name:entries) {
         if(out.size()>=limit) break;
-        auto full=root+"/"+name; struct stat st{};
+        auto full=root+"/"+name;bool directory=false,regular=false;uint64_t bytes=0,modified=0;
 #ifdef _WIN32
-        DWORD flags=GetFileAttributesA(full.c_str());
+        DWORD flags=GetFileAttributesW(WidePath(full).c_str());
         if(flags==INVALID_FILE_ATTRIBUTES || (flags&FILE_ATTRIBUTE_REPARSE_POINT)) continue;
-        if(stat(full.c_str(),&st)) continue;
+        directory=(flags&FILE_ATTRIBUTE_DIRECTORY)!=0;regular=!directory;
+        WIN32_FILE_ATTRIBUTE_DATA metadata{};
+        if(regular&&GetFileAttributesExW(WidePath(full).c_str(),GetFileExInfoStandard,&metadata)){
+            bytes=(uint64_t(metadata.nFileSizeHigh)<<32)|metadata.nFileSizeLow;
+            modified=(uint64_t(metadata.ftLastWriteTime.dwHighDateTime)<<32)|metadata.ftLastWriteTime.dwLowDateTime;
+        }
 #else
+        struct stat st{};
         if(lstat(full.c_str(),&st)||S_ISLNK(st.st_mode)) continue;
+        directory=S_ISDIR(st.st_mode);regular=S_ISREG(st.st_mode);
+        if(regular){bytes=static_cast<uint64_t>(st.st_size);modified=static_cast<uint64_t>(st.st_mtime);}
 #endif
-        if(S_ISDIR(st.st_mode)) { if(depth>0) Scan(full,out,limit,depth-1); continue; }
-        if(!S_ISREG(st.st_mode)||name.size()<5) continue;
+        if(directory) { if(depth>0) Scan(full,out,limit,depth-1); continue; }
+        if(!regular||name.size()<5) continue;
         auto suffix=name.substr(name.size()-4);
         std::transform(suffix.begin(),suffix.end(),suffix.begin(),[](unsigned char c){return static_cast<char>(std::tolower(c));});
         if(suffix!=".mp3") continue;
         Track track{full,name.substr(0,name.size()-4),"本地音乐"};
+        track.fileSize=bytes;track.modified=modified;
         auto sep=track.title.find(" - ");
         if(sep!=std::string::npos && sep>0 && sep+3<track.title.size()) {
             track.artist=track.title.substr(0,sep); track.title.erase(0,sep+3);

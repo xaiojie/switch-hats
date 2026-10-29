@@ -4,8 +4,13 @@ import json
 import pathlib
 import struct
 import sys
+import argparse
 
-path = pathlib.Path(sys.argv[1])
+parser = argparse.ArgumentParser()
+parser.add_argument('path', type=pathlib.Path)
+parser.add_argument('--version', default='0.3.0')
+args = parser.parse_args()
+path = args.path
 data = path.read_bytes()
 assert data[0x10:0x14] == b'NRO0', 'NRO magic missing'
 program_size = struct.unpack_from('<I', data, 0x18)[0]
@@ -23,7 +28,7 @@ version = nacp[0x3060:0x3070].split(b'\0')[0].decode('utf-8')
 assert title == '爬爬的随身听', title
 for language in range(16):
     assert nacp[language*768:language*768+512].split(b'\0')[0].decode('utf-8') == title
-assert version == '0.2.0', version
+assert version == args.version, version
 icon = sections['icon']
 assert icon[:2] == b'\xff\xd8', 'Icon is not JPEG'
 pos, dimensions = 2, None

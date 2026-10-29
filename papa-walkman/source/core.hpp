@@ -8,9 +8,10 @@ namespace papa {
 enum class SourceKind { SD, Cloud };
 struct Track {
     std::string path, title, artist;
-    std::string id, album = "未知专辑", albumArtist, cover, lyrics, sourceId;
+    std::string id{}, album = "未知专辑", albumArtist{}, cover{}, lyrics{}, sourceId{};
     int trackNumber = 0, discNumber = 0;
     double duration = 0;
+    uint64_t fileSize = 0, modified = 0;
     SourceKind source = SourceKind::SD;
 };
 enum class Mode { Sequential, LoopAll, RepeatOne, Shuffle };

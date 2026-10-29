@@ -69,13 +69,13 @@ int main(int,char**){
   if(!sockets)notice="网络初始化失败，SD 卡音乐仍可使用";
   std::string artKey;std::thread scanner;std::atomic<uint64_t>scanGeneration{0};std::atomic<bool>scanDone{false};bool scanning=false;
   LibraryLoadResult pending;bool refreshAgain=false;
-  auto pins=[&]{std::vector<std::string>values;for(const auto&s:model.user.sources)if(s.enabled)values.push_back(CatalogCachePath(cache,s));if(auto t=model.Current()){values.push_back(cache.AssetPath(t->cover));values.push_back(cache.AssetPath(t->lyrics));}return values;};
+  auto pins=[&]{std::vector<std::string>values;for(const auto&s:model.user.sources)if(s.enabled){auto path=CatalogCachePath(cache,s);values.push_back(path);values.push_back(path+".bak");}if(auto t=model.Current()){values.push_back(cache.AssetPath(t->cover));values.push_back(cache.AssetPath(t->lyrics));}return values;};
   auto startScan=[&]{if(scanning){refreshAgain=true;notice="当前刷新结束后将读取最新配置";return;}if(scanner.joinable())scanner.join();
    LoadSources(ConfigRoot+"/sources.json",model.user.sources);auto sources=model.user.sources;auto keep=pins();
    cache.SetPins(keep);scanning=true;scanDone=false;uint64_t generation=++scanGeneration;
    scanner=std::thread([&,sources,keep,generation]{pending=LoadLibraries(MusicRoot,ConfigRoot,cache,sources,scanGeneration,generation,keep);scanDone.store(true,std::memory_order_release);});};
   startScan();
-  auto options=[&]{cache.SetPins(pins());cache.Prune(pins());auto used=cache.Usage().bytes;StreamOptions o;o.cacheDirectory=cache.StreamDirectory();o.cacheBytes=used<cache.Limit()?cache.Limit()-used:0;return o;};
+  auto options=[&]{cache.RefreshStreams();cache.SetPins(pins());cache.Prune(pins());auto usage=cache.Usage();auto used=usage.ready?usage.bytes:cache.Limit();StreamOptions o;o.cacheDirectory=cache.StreamDirectory();o.cacheBytes=used<cache.Limit()?cache.Limit()-used:0;return o;};
   auto playCurrent=[&](double start=0,bool paused=false){auto t=model.Current();if(!t)return;auto o=options();if(t->source==SourceKind::Cloud&&o.cacheBytes<128*1024){player.Stop();notice="缓存空间不足，请清理闲置缓存或提高上限";return;}player.SetStreamOptions(o);player.Play(t->path,start,paused);lyricScroll=-1;artwork.Request(*t);artKey=t->id;};
   auto change=[&](int direction,bool automatic){if(direction>0?model.Next(automatic):model.Previous())playCurrent();};
   auto save=[&](bool full=true){auto s=player.Snapshot();if(auto t=model.Current()){if(!s.loading&&s.error.empty()&&s.path==t->path){model.user.resume={*t,s.seconds,model.GetMode(),settings.volume,true};}}
@@ -175,7 +175,7 @@ int main(int,char**){
    view.paused=state.paused;view.loading=state.loading;view.scanning=scanning;view.seconds=state.seconds;view.duration=state.duration;view.error=state.error;view.ended=state.ended;view.sourceRate=state.rate;view.seekable=state.seekable;view.durationKnown=state.durationKnown;view.buffering=state.buffering;
    view.tape=tape;view.stale=stale;view.notice=notice.empty()?art.note:notice;view.resumeAvailable=model.user.resume.valid&&state.path.empty();view.favorite=view.playing&&model.Favorite(*view.playing);
    view.coverImage=art.cover.get();view.lyricData=art.lyrics.get();view.lyricScroll=lyricScroll;if(view.playing)view.lyricOffset=model.user.lyricsOffsets[view.playing->id];
-   if(armTicksToNs(begin-lastUsage)>1000000000ull){cachedUsage=cache.Usage().bytes;lastUsage=begin;}
+   if(armTicksToNs(begin-lastUsage)>1000000000ull){cache.RefreshStreams();cachedUsage=cache.Usage().bytes;lastUsage=begin;}
    view.cacheBytes=cachedUsage;view.cacheLimit=cache.Limit();auto network=player.StreamSnapshotValue();view.networkBytes=network.downloadedBytes;view.networkTotal=network.totalBytes;
    if(page==Page::Library||page==Page::Queue)for(int row=0;row<VisibleRows;++row){int i=offset+row;const Track*track=nullptr;
     if(view.showingGroups&&i>=0&&size_t(i)<groups.size()){

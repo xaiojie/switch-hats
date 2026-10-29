@@ -55,6 +55,17 @@ struct Canvas {
     void Play(int x,int y,int size,uint32_t c,bool reverse=false){
         for(int xx=0;xx<size;++xx){int half=static_cast<int>((size-xx)*0.66f);Box(reverse?x-xx:x+xx,y-half,1,half*2+1,c);}
     }
+    void Image(int x,int y,int w,int h,const CoverImage*image,int radius=10){
+        if(!image||image->width<=0||image->height<=0||image->pixels.empty())return;
+        double scale=std::max(w/double(image->width),h/double(image->height));
+        double ox=(image->width-w/scale)/2,oy=(image->height-h/scale)/2;
+        for(int yy=0;yy<h;++yy)for(int xx=0;xx<w;++xx){
+            float dx=std::max(float(radius)-xx-.5f,xx+.5f-(w-radius)),dy=std::max(float(radius)-yy-.5f,yy+.5f-(h-radius));
+            if(dx>0&&dy>0&&dx*dx+dy*dy>radius*radius)continue;
+            int sx=std::max(0,std::min(image->width-1,int(ox+(xx+.5)/scale))),sy=std::max(0,std::min(image->height-1,int(oy+(yy+.5)/scale)));
+            uint32_t pixel=image->pixels[size_t(sy)*image->width+sx];Dot(x+xx,y+yy,pixel,int(pixel>>24));
+        }
+    }
 };
 uint32_t NextCodepoint(const char*& s){
     auto first=static_cast<unsigned char>(*s++); if(first<128)return first;
@@ -67,6 +78,8 @@ uint32_t NextCodepoint(const char*& s){
 struct Glyph{int width=0,height=0,x=0,y=0,advance=0;std::vector<unsigned char> alpha;};
 }
 struct Renderer::Impl{
+    std::string plainCache;
+    std::vector<std::string> plainLines;
     std::vector<stbtt_fontinfo> fonts;
     std::map<std::pair<int,uint32_t>,Glyph> glyphs;
     Glyph& Get(uint32_t code,int size){
@@ -87,7 +100,7 @@ struct Renderer::Impl{
     int Measure(const std::string&text,int size){int width=0;const char*s=text.c_str();while(*s)width+=Get(NextCodepoint(s),size).advance;return width;}
     void Text(Canvas&c,int x,int baseline,const std::string&text,int size,uint32_t color,int maxWidth=1200){
         int end=x+maxWidth;const char*s=text.c_str();
-        while(*s){auto cp=NextCodepoint(s);auto&g=Get(cp,size);
+        while(*s){auto cp=NextCodepoint(s);if(cp<32)cp=' ';auto&g=Get(cp,size);
             if(x+g.advance>end){auto&dots=Get(0x2026,size);for(int yy=0;yy<dots.height;++yy)for(int xx=0;xx<dots.width;++xx)c.Dot(std::min(x,end-dots.advance)+dots.x+xx,baseline+dots.y+yy,color,dots.alpha[yy*dots.width+xx]);break;}
             for(int yy=0;yy<g.height;++yy)for(int xx=0;xx<g.width;++xx)c.Dot(x+g.x+xx,baseline+g.y+yy,color,g.alpha[yy*g.width+xx]);
             x+=g.advance;
@@ -111,78 +124,43 @@ bool Renderer::AddFont(const void* data,size_t size){
     stbtt_fontinfo font{};if(!stbtt_InitFont(&font,bytes,offset))return false;
     p_->fonts.push_back(font);p_->glyphs.clear();return true;
 }
-void Renderer::Draw(uint32_t* pixels,int strideBytes,const View& v){
-    if(!pixels||strideBytes<ScreenWidth*4)return;
-    Canvas c{pixels,strideBytes/4};c.Box(0,0,ScreenWidth,ScreenHeight,bg);
-    auto text=[&](int x,int y,const std::string&s,int size,uint32_t color,int w=1200){p_->Text(c,x,y,s,size,color,w);};
-    c.Round(40,34,44,44,13,orange);c.Circle(53,56,7,white);c.Circle(71,56,7,white);c.Line(53,56,71,56,2,orange);
-    text(98,65,"爬爬的随身听",34,ink);text(100,88,"PAPA WALKMAN  /  YOUR MUSIC, YOUR MOMENT",12,muted);
-    const char*state=v.scanning?"正在扫描曲库":!v.error.empty()?"需要留意":v.loading?"正在打开音乐":v.current<0?"等待播放":v.ended?"播放结束":v.paused?"已暂停":"正在播放";
-    c.Round(1082,39,158,38,19,Color(0xe9e8df));c.Circle(1103,58,4,v.current>=0&&!v.paused&&!v.ended?Color(0x668568):orange);text(1117,64,state,17,ink,112);
-    text(40,120,"NOW PLAYING",14,muted);text(688,120,"VOL. 01",13,muted);
-    c.Round(40,143,740,268,28,Color(0xe2ddd2));c.Round(40,135,740,268,28,Color(0xd4cfc1));c.Round(42,136,736,263,27,cream);
-    c.Round(70,162,680,211,19,Color(0x1c302e));c.Round(73,165,674,205,17,Color(0x2d4140));
-    c.Round(92,181,636,45,7,Color(0xf4eddd));c.Box(92,213,636,13,orange);
-    text(109,204,"PAPA  /  ORIGINAL MIXTAPE",16,ink);text(641,204,"SIDE A",15,ink);
-    c.Round(339,264,143,45,10,Color(0x172d2a));c.Box(357,280,107,11,Color(0x665e4a));
-    p_->Reel(c,246,292,static_cast<float>(v.animation));p_->Reel(c,574,292,static_cast<float>(v.animation));
-    c.Line(246,350,574,350,2,Color(0x8a8068));
-    c.Circle(111,345,5,Color(0x182c29));c.Circle(709,345,5,Color(0x182c29));
-    for(int x:{57,763})for(int y:{151,385}){c.Circle(x,y,3,Color(0xa5a493));c.Line(x-2,y,x+2,y,1,Color(0x6b7468));}
-    text(85,389,"STEREO",11,muted);text(641,389,"COMPACT AUDIO",11,muted);
-    bool have=v.tracks&&v.current>=0&&static_cast<size_t>(v.current)<v.tracks->size();
-    std::string title=have?(*v.tracks)[v.current].title:"选择一首，开始听歌";
-    std::string artist=have?(*v.tracks)[v.current].artist:"把 MP3 放进 SD 卡的 music 文件夹";
-    text(50,455,title,38,ink,710);text(52,488,artist,22,muted,660);
-    double fraction=v.duration>0?std::max(0.0,std::min(1.0,v.seconds/v.duration)):0;
-    c.Round(52,520,704,6,3,Color(0xdcded3));if(fraction>0)c.Round(52,520,std::max(6,static_cast<int>(704*fraction)),6,3,orange);
-    c.Circle(static_cast<float>(52+704*fraction),523,6,orange);
-    text(52,554,TimeLabel(v.seconds),17,muted);auto duration=TimeLabel(v.duration);text(756-p_->Measure(duration,17),554,duration,17,muted);
-    c.Circle(410,600,37,Color(0xdfcdbc));c.Circle(410,596,37,orange);
-    if(have&&!v.paused&&!v.ended){c.Round(399,584,7,23,2,white);c.Round(414,584,7,23,2,white);}else c.Play(403,596,20,white);
-    c.Play(310,596,14,ink,true);c.Box(293,586,3,20,ink);
-    c.Play(499,596,14,ink);c.Box(516,586,3,20,ink);
-    c.Round(50,577,153,40,20,Color(0xe9e6dc));text(69,603,ModeName(v.mode),19,ink,126);
-    c.Circle(631,596,16,Color(0xe7e5da));c.Line(625,596,637,596,2,ink);
-    char volume[20];std::snprintf(volume,sizeof(volume),"%d%%",v.volume);text(662,603,volume,21,ink,70);
-    c.Circle(753,596,16,Color(0xe7e5da));c.Line(747,596,759,596,2,ink);c.Line(753,590,753,602,2,ink);
-    c.Round(816,143,424,494,24,Color(0xe8e4da));c.Round(816,135,424,494,24,white);
-    text(842,177,"我的曲库",27,ink);size_t count=v.tracks?v.tracks->size():0;
-    char total[24];std::snprintf(total,sizeof(total),"%u 首",static_cast<unsigned>(count));text(1140,175,total,17,muted,82);
-    c.Box(840,193,376,1,Color(0xeae8e0));
-    if(count==0){
-        c.Circle(1028,309,34,Color(0xf4e9dc));
-        c.Line(1031,292,1031,319,3,orange);c.Line(1031,292,1042,296,4,orange);c.Circle(1026,319,6,orange);
-        text(908,385,v.scanning?"正在寻找音乐…":"还没有音乐",25,ink,294);
-        text(859,423,"把 MP3 放入 /music 文件夹",20,muted,350);
-        text(915,459,"然后按 X 重新扫描",19,muted,286);
-    }else for(int row=0;row<VisibleRows;++row){
-        int index=v.offset+row;if(index<0||static_cast<size_t>(index)>=count)break;
-        int y=202+row*64;bool playing=index==v.current,selected=index==v.selected;
-        if(selected)c.Round(832,y,392,60,12,Color(0xe9b89b));
-        if(playing||selected)c.Round(833,y+1,390,58,11,playing?Color(0xf9e8dc):Color(0xf5f2eb));
-        if(playing){for(int b=0;b<3;++b){int h=8+static_cast<int>((std::sin(v.animation*3+b*2)+1)*8);if(v.paused||v.ended)h=7+b*4;c.Round(850+b*5,y+30-h/2,3,h,1,orange);}}
-        else{char number[12];std::snprintf(number,sizeof(number),"%02d",index+1);text(848,y+35,number,16,muted,30);}
-        const auto&t=(*v.tracks)[index];text(888,y+28,t.title,24,playing?orange:ink,316);text(888,y+49,t.artist,17,muted,316);
+std::vector<std::string>WrapPlainLyrics(const std::string&value,size_t columns){
+    std::vector<std::string>lines;if(value.empty()||value.size()>1024*1024)return lines;
+    columns=std::max<size_t>(2,std::min<size_t>(200,columns));std::string line;size_t width=0;
+    const char*s=value.c_str();
+    while(*s&&lines.size()<10000){const char*before=s;uint32_t cp=NextCodepoint(s);
+        if(cp=='\r')continue;
+        if(cp=='\n'){lines.push_back(std::move(line));line.clear();width=0;continue;}
+        size_t units=cp>=0x2e80?2:1;if(cp>=0x300&&cp<=0x36f)units=0;
+        if(width+units>columns&&!line.empty()){lines.push_back(std::move(line));line.clear();width=0;}
+        line.append(before,size_t(s-before));width+=units;
     }
-    if(count>VisibleRows){int h=std::max(16,static_cast<int>(384.0*VisibleRows/count));int yy=202+static_cast<int>((384-h)*static_cast<double>(std::max(0,v.offset))/std::max<size_t>(1,count-VisibleRows));c.Round(1231,yy,3,h,1,Color(0xd3d5c9));}
-    if(!v.error.empty()){c.Round(40,635,1200,24,8,Color(0xf8e4d8));text(54,653,v.error,18,Color(0xa8532f),1168);}
-    c.Box(40,669,1200,1,Color(0xdedfd4));
-    text(40,697,"↑↓ 选曲    A 播放/暂停    L/R 切歌    ZL/ZR 快进退    ←→ 音量    Y 模式    X 扫描",19,muted,1090);
-    text(1151,697,"+ 退出",19,ink,89);
+    if(!line.empty()&&lines.size()<10000)lines.push_back(std::move(line));
+    return lines;
 }
-Hit HitTest(int x,int y,const View&v){
-    if(x<0||y<0||x>=ScreenWidth||y>=ScreenHeight)return {};
-    if(x>=832&&x<1224&&y>=202&&y<586&&v.tracks){int index=v.offset+(y-202)/64;if(index>=0&&static_cast<size_t>(index)<v.tracks->size())return {Action::Song,index,0};}
-    if(x>=52&&x<=756&&y>=508&&y<=540&&v.duration>0)return {Action::Seek,-1,(x-52)/704.0};
-    if(y>=560&&y<=634){
-        if(x>=370&&x<=450)return {Action::Toggle,v.current>=0?v.current:v.selected,0};
-        if(x>=280&&x<=333)return {Action::Previous,-1,0};
-        if(x>=487&&x<=537)return {Action::Next,-1,0};
-        if(x>=50&&x<=203)return {Action::Mode,-1,0};
-        if(x>=610&&x<=649)return {Action::VolumeDown,-1,0};
-        if(x>=733&&x<=776)return {Action::VolumeUp,-1,0};
+int ClampLyricScroll(const Lyrics*lyrics,int requested){
+    if(!lyrics)return 0;
+    size_t rows=lyrics->lines.empty()?WrapPlainLyrics(lyrics->plain).size():lyrics->lines.size();
+    return std::max(0,std::min(requested,rows?int(rows-1):0));
+}
+PointerGesture ResolveGesture(int sx,int sy,int ex,int ey,const View&view){
+    PointerGesture gesture;
+    if(std::abs(ex-sx)<=28&&std::abs(ey-sy)<=28){gesture.hit=HitTest(ex,ey,view);return gesture;}
+    if(view.duration>0&&view.seekable){
+        if(view.page==Page::Player&&sx>=52&&sx<=756&&sy>=508&&sy<=540){
+            gesture.hit={Action::Seek,-1,std::max(0.0,std::min(1.0,(ex-52)/704.0))};return gesture;
+        }
+        if(view.page!=Page::Player&&view.error.empty()&&view.notice.empty()&&sx>=816&&sx<=1240&&sy>=636&&sy<=658){
+            gesture.hit={Action::Seek,-1,std::max(0.0,std::min(1.0,(ex-816)/424.0))};return gesture;
+        }
     }
-    return {};
+    if(view.page==Page::Lyrics&&sx>=280&&sx<1240&&sy>=200&&sy<558){gesture.scrolling=gesture.lyrics=true;gesture.scrollRows=(sy-ey)/56;return gesture;}
+    if((view.page==Page::Library||view.page==Page::Queue)&&sx>=40&&sx<1240&&sy>=201&&sy<550){
+        gesture.scrolling=true;gesture.scrollRows=view.showingGroups?(sy-ey)/177*3:(sy-ey)/58;return gesture;
+    }
+    if(view.page==Page::Settings&&sx>=40&&sx<1240&&sy>=206&&sy<438){gesture.scrolling=true;gesture.scrollRows=(sy-ey)/58;return gesture;}
+    if(view.page==Page::Player&&sx>=832&&sx<1224&&sy>=202&&sy<586&&!view.lyricData){gesture.scrolling=true;gesture.scrollRows=(sy-ey)/64;}
+    return gesture;
 }
+#include "ui_views.inc"
 }
