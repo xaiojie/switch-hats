@@ -56,7 +56,7 @@ class HttpInstallJobs:
     def submit(self, device, name):
         if (not device or not device.get('connected') or device.get('mode') != 'switch-link'
                 or device.get('http_install_supported') is not True):
-            raise HttpJobError('请打开 Switch Link 0.2.1 或更新版接收页面；旧版和 DBI 不支持本工具的 HTTP 安装')
+            raise HttpJobError('请打开 Switch Link 0.2.3 或更新版接收页面；旧版和 DBI 不支持本工具的 HTTP 安装')
         if not self.base_url:
             raise HttpJobError('主机 HTTP 安装服务尚未就绪')
         package_name(name)

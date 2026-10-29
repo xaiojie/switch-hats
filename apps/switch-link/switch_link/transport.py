@@ -11,6 +11,8 @@ import threading
 import time
 import uuid
 
+from . import naming
+
 
 class RemoteError(Exception):
     pass
@@ -50,7 +52,8 @@ class RemoteFTP:
         self.stage_callback = None
 
     def remote_path(self, path):
-        return self.sd_root + validate_path(path)
+        # 非 ASCII 名字先落成 ASCII 编码形式，见 switch_link/naming.py
+        return self.sd_root + naming.encode_path(validate_path(path))
 
     @contextmanager
     def connection(self, file_access=False):
@@ -86,15 +89,16 @@ class RemoteFTP:
                 raise
             rows = None
         if rows is not None:
-            return rows
+            return [(naming.decode_component(name), facts) for name, facts in rows]
         lines = []
         ftp.retrlines('LIST ' + path, lines.append)
         result = []
         for line in lines:
             parts = line.split(None, 8)
             if len(parts) == 9 and parts[0][0] in 'd-l':
-                result.append((parts[8], {'type': 'dir' if parts[0][0] == 'd' else 'file',
-                                          'size': parts[4]}))
+                result.append((naming.decode_component(parts[8]),
+                           {'type': 'dir' if parts[0][0] == 'd' else 'file',
+                            'size': parts[4]}))
         return result
 
     def list(self, path='/'):
@@ -130,7 +134,11 @@ class RemoteFTP:
             ftp.retrbinary('RETR ' + self.remote_path(path), writer, blocksize=256 * 1024)
 
     def upload(self, source, target, overwrite=False, progress=None, cancel=None):
-        target = self.remote_path(target)
+        try:
+            target = self.remote_path(target)
+            naming.storage_component(posixpath.basename(target))
+        except naming.NameTooLong as exc:
+            raise RemoteError(str(exc)) from exc
         temporary = posixpath.join(posixpath.dirname(target), '.switchlink.part-' + uuid.uuid4().hex)
         backup = None
         with self.connection(file_access=True) as ftp:
@@ -204,7 +212,8 @@ class RemoteFTP:
     def install(self, source, name, progress=None, cancel=None):
         if not self.device.get('can_install'):
             raise RemoteError('当前接收端只支持文件管理，请打开 Switch Link 客户端')
-        destination = self.device.get('install_path', '/install').rstrip('/') + '/' + validate_name(name)
+        destination = (self.device.get('install_path', '/install').rstrip('/') + '/'
+                       + naming.encode_component(validate_name(name)))
         with self.connection() as ftp:
             if self.device.get('mode') == 'dbi-install' and not is_dbi_installer(self.entries(ftp, '/')):
                 raise RemoteError('DBI 模式已切换，请选择「安装游戏（SD 卡）」并刷新连接后重试。')

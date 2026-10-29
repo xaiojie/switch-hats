@@ -12,9 +12,9 @@ def change(name, old, new):
     path.write_text(text.replace(old, new), encoding='utf-8', newline='\n')
 
 change('CMakeLists.txt', 'project(sphaira LANGUAGES', 'project(SwitchLink LANGUAGES')
-change('sphaira/CMakeLists.txt', 'set(sphaira_VERSION 1.0.7)', 'set(sphaira_VERSION 0.2.1)')
+change('sphaira/CMakeLists.txt', 'set(sphaira_VERSION 1.0.7)', 'set(sphaira_VERSION 0.2.3)')
 change('sphaira/CMakeLists.txt', '    source/ftpsrv_helper.cpp', '    source/switch_link.cpp\n        source/task_progress.c\n        source/http_install.c\n        source/ftpsrv_helper.cpp')
-change('sphaira/CMakeLists.txt', 'NAME ${CMAKE_PROJECT_NAME}', 'NAME "Switch Link 0.2.1"')
+change('sphaira/CMakeLists.txt', 'NAME ${CMAKE_PROJECT_NAME}', 'NAME "Switch Link 0.2.3"')
 change('sphaira/CMakeLists.txt', 'AUTHOR TotalJustice', 'AUTHOR "Switch Link / Sphaira contributors"')
 change('sphaira/source/main.cpp', '#include "ui/menus/main_menu.hpp"', '#include "ui/menus/main_menu.hpp"\n#include "ui/menus/ftp_menu.hpp"')
 change('sphaira/source/main.cpp', 'app->Push<sphaira::ui::menu::main::MainMenu>();', 'app->Push<sphaira::ui::menu::ftp::Menu>(0);')

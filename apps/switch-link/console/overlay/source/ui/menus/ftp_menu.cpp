@@ -16,10 +16,10 @@
 
 namespace sphaira::ui::menu::ftp {
 
-Menu::Menu(u32 flags) : stream::Menu{"Switch Link 0.2.1", flags} {
+Menu::Menu(u32 flags) : stream::Menu{"Switch Link 0.2.3", flags} {
     m_was_ftp_enabled = App::GetFtpEnable();
     if (!m_was_ftp_enabled) App::SetFtpEnable(true);
-    // FTP manages SD files; only HTTP commands may start installs in 0.2.1.
+    // FTP manages SD files; only HTTP commands may start installs in 0.2.3.
     ftpsrv::DisableInstallMode();
     m_port = ftpsrv::GetPort();
     m_anon = ftpsrv::IsAnon();

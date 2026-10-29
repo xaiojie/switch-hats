@@ -1,10 +1,10 @@
-# Switch Link 0.2.1
+# Switch Link 0.2.3
 
 **由我们自己的 Switch Link 主机端通过 HTTP 下载并安装游戏。** 网页发起任务，Switch Link 完成安装并回传真实结果；DBI 不是此功能的安装执行端。
 
 ## 使用
 
-1. Switch 主机打开 **Switch Link 0.2.1** 并保持接收页面。旧0.1.1不支持本次HTTP安装，需要更新NRO；保留旧版作为回退。
+1. Switch 主机打开 **Switch Link 0.2.3** 并保持接收页面。旧0.1.1不支持本次HTTP安装，需要更新NRO；保留旧版作为回退。
 2. 电脑双击 `Start Switch Link.cmd`，打开 `http://127.0.0.1:8088/#install`。选择发现的自己的 Switch Link 主机，无需反复输入IP。
 3. 在网页选择 **安装包并安装**；也可以对已加入电脑游戏库的包直接点安装，不重复上传。
 4. 数据经HTTP从电脑传到Switch Link，由其现有安装引擎安装到SD卡。保持接收页面，不在安装中退出。
@@ -35,3 +35,9 @@
 Python：`python -m unittest discover -s tests -v`。网页：static/ 下 `node --test *.test.cjs`。开发环境需要 pyftpdlib、Playwright/Edge；正常使用电脑端只需Python3.11标准库。console/ 保留GPL许可、对应源码和构建记录。
 
 测试与编译通过不等于真机安装成功；完整安装和实际速度需要在主机打开新版后验证。此改动不自动恢复此前已经停止的测试任务。
+
+## 0.2.3 变更
+
+- 修「不能传中文名文件」：主机端 fs 层建不出部分中文字符（返回 `0x202`），能建出来的名字也进不了 `LIST`。电脑端 `switch_link/naming.py` 现在把所有非 ASCII 名字在落盘前做百分号编码（`周杰伦 - 七里香.mp3` → `%E5%91%A8%E6%9D%B0%E4%BC%A6 - %E4%B8%83%E9%87%8C%E9%A6%99.mp3`），网页列表显示时再解码回中文；纯 ASCII 名字不变，字面量 `%` 不会被误伤，编码后超过 200 字符的名字上传前直接报错。
+- 主机端 NRO 只改版本号（0.2.1 → 0.2.3），代码未动；卡上路径 `/switch/switch-link-023/switch-link-023.nro`。
+- 副作用：主机端 App 自己的文件列表显示的是编码后的名字，电脑端网页显示中文。实测记录见 [docs/switch-hardware.md](../../docs/switch-hardware.md) 「已知的坑」第 8 条。

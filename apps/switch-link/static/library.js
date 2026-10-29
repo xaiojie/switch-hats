@@ -35,7 +35,7 @@
   function nativeStatus() {
     const device = context.device;
     if (!device?.connected) return '尚未连接 Switch Link。请在主机打开接收页面，再发现主机。';
-    if (!SwitchLink.supportsHttpInstall(device)) return '请在主机升级并打开 Switch Link 0.2.1 或更新版本。';
+    if (!SwitchLink.supportsHttpInstall(device)) return '请在主机升级并打开 Switch Link 0.2.3 或更新版本。';
     if (!device.http_install_ready) return (device.name || 'Switch') + '：请打开 Switch Link 接收页面并等待当前任务结束。';
     return (device.name || 'Switch') + ' · Switch Link 安装已就绪';
   }

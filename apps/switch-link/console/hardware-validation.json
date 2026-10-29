@@ -1,6 +1,6 @@
 {
   "date": "2026-10-28",
-  "console_version": "0.2.1",
+  "console_version": "0.2.3",
   "nro_sha256": "50f8ddca571b2b8baffaa5a0bcd7c54ad1cf06981e3e23fef6266e1979916c70",
   "device_class": "Switch OLED",
   "hos": "22.5.0 emuMMC",

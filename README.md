@@ -34,7 +34,7 @@
 | 目录 | 是什么 | 状态 |
 |---|---|---|
 | [`cfw/`](cfw/README.md) | HATS 整合包的中文化与美化：简体 Nyx、四启动项、开机壁纸、大气层启动图、写卡脚本 | 稳定使用中 |
-| [`apps/switch-link/`](apps/switch-link/README.md) | **Switch Link**：主机端 NRO（Sphaira 改版）+ Mac 网页端。自动发现主机、HTTP 流式安装 NSP/XCI 到 SD、FTP 管文件、装完回执 | 0.2.1，NSP 实机验证通过；XCI 装到 69.6% 失败（疑似主机 SD 空间） |
+| [`apps/switch-link/`](apps/switch-link/README.md) | **Switch Link**：主机端 NRO（Sphaira 改版）+ Mac 网页端。自动发现主机、HTTP 流式安装 NSP/XCI 到 SD、FTP 管文件、装完回执 | 0.2.3，NSP 实机验证通过；XCI 装到 69.6% 失败（疑似主机 SD 空间） |
 | [`apps/papa-walkman/`](apps/papa-walkman/README.md) | **爬爬的随身听**：磁带机风格的音乐播放器，MP3/FLAC/WAV/OGG，歌词、库页、可取消的 HTTP 流播、断点恢复 | 0.3.0，源码与测试齐全 |
 | [`research/dst-mods/`](research/dst-mods/STATUS-2026-10-29.md) | **饥荒 mod 移植研究**：LayeredFS 注入、十一轮实验、崩溃点反汇编、剩余假设 | **未解决**（`0x4A8` 原生崩溃） |
 | [`tools/dbi/`](tools/dbi/README.md) | DBI 921/912 与简体中文补丁（备用的装包/文件管理手段） | 备用 |

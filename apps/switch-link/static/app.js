@@ -223,7 +223,7 @@ if (typeof document !== 'undefined') (() => {
     }
     if (!canBrowse(state.device)) {
       $('file-list').hidden = true; $('file-empty').hidden = false;
-      $('file-empty').replaceChildren(...emptyFiles('当前连接不提供 SD 卡文件管理', '游戏安装请打开 Switch Link 0.2.1 或更新版本的接收页面。管理文件需要可浏览 SD 卡的 FTP 服务。', 'package', '前往 HTTP 游戏安装', () => { location.hash = 'install'; setPage('install'); }).childNodes);
+      $('file-empty').replaceChildren(...emptyFiles('当前连接不提供 SD 卡文件管理', '游戏安装请打开 Switch Link 0.2.3 或更新版本的接收页面。管理文件需要可浏览 SD 卡的 FTP 服务。', 'package', '前往 HTTP 游戏安装', () => { location.hash = 'install'; setPage('install'); }).childNodes);
       $('file-count').textContent = '文件管理暂不可用'; $('file-footer-status').textContent = '当前 FTP 未提供文件浏览'; renderSelection(); return;
     }
     if (state.loading && !state.entries.length) {

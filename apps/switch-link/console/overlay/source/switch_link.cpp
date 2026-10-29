@@ -187,8 +187,8 @@ void BeaconTick(unsigned port) {
     yyjson_mut_doc_set_root(doc, root);
     yyjson_mut_obj_add_str(doc, root, "type", "switch-link");
     yyjson_mut_obj_add_uint(doc, root, "version", 1);
-    yyjson_mut_obj_add_str(doc, root, "name", "Switch Link 0.2.1");
-    yyjson_mut_obj_add_str(doc, root, "app_version", "0.2.1");
+    yyjson_mut_obj_add_str(doc, root, "name", "Switch Link 0.2.3");
+    yyjson_mut_obj_add_str(doc, root, "app_version", "0.2.3");
     yyjson_mut_obj_add_uint(doc, root, "ftp_port", port);
     yyjson_mut_obj_add_uint(doc, root, "progress_port", PROGRESS_PORT);
     yyjson_mut_obj_add_bool(doc, root, "progress_ready", progress_socket >= 0);

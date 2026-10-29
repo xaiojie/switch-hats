@@ -88,8 +88,7 @@ file=payload.bin
 
 | 目录 / 文件 | 说明 |
 |---|---|
-| `switch-link-021/` | **Switch Link 0.2.1**（本项目，HTTP 原生装 NSP/XCI + FTP 管理） |
-| `switch-link-022-utf8/` | 调试包，**没有 0.2.2 这个功能版本**：`console/diagnose_unicode.py` 把 0.2.1 源码打上 UTF-8 路径诊断日志、顺手把版本号改成 "0.2.2 UTF8" 编出来的（4,039,881 B） |
+| `switch-link-023/` | **Switch Link 0.2.3**（本项目，HTTP 原生装 NSP/XCI + FTP 管理 + 中文名落盘编码）。`switch-link-021/` 是上一版，留着可随时回退；卡上的 0.2.2 UTF8 诊断包已删除（它只是给 ftpsrv 打路径日志的调试包，不是功能版本） |
 | `papa-walkman/` | **爬爬的随身听**（本项目，MP3/FLAC/WAV/OGG 播放器） |
 | `DBI/` | DBI 912，用于 MTP/FTP/装包（备选手段） |
 | `sphaira/` | Switch Link 的上游壳（文件管理） |
@@ -125,7 +124,11 @@ file=payload.bin
 5. **emuMMC 是文件型**：`emuMMC/SD00` 里的 `Nintendo/` 不要手动动，虚拟系统坏了大不了重做（`backup/` 有备份）。
 6. **系统时间要准**：游戏和 TLS 都依赖它，偏差大了 Switch Link/随身听都可能失败；`QuickNTP.ovl` 可一键对时。
 7. **固件 22.5.0 未升级**：升级要 `Daybreak`，且 HATS 包要支持新固件（当前支持到 23.0.1）。不要为了装游戏升系统。
-8. **中文文件名经 Switch Link 的 FTP 写不进卡**（建文件/建目录/改名全失败，结果是 `0x202 = FsError_PathNotFound`；纯 ASCII 路径正常）。这是当前已知缺陷，`/sdmc:/config/switch-link/utf8-path.log` 有现场日志：完整 UTF-8 字节送到了 `fsFs*`，仍返回 PathNotFound。传文件暂时用 ASCII 文件名，或用 DBI/sphaira 的 FTP。
+8. **这台机器的 fs 层处理不了中文文件名**，实测在 `/sdmc:/music/` 下逐个字符试出来的（2026-10-29）：
+   - 有的字符直接建不出来：`文`、`ß`、`Ж`、`あ`、`한` 建文件/建目录都返回 `0x202`（ftpsrv 里记作 `FsError_PathNotFound`），而 `中`、`café`、`naïve` 能建。
+   - 能建出来的名字**在目录枚举里看不见**：写进 `中.txt`（7 字节）后 `SIZE` 拿得到 7，但 `LIST` 和 `MLSD` 都不返回这一条 → 对用户来说就是"传上去了但列表里没有"。
+   - 现场日志 `/sdmc:/config/switch-link/utf8-path.log` 里 UTF-8 字节是正确的（`e4b8ad` = 中），所以不是编码丢失，是 `fsFs*`/枚举那一层的问题。
+   - **0.2.3 起电脑端的做法**：`switch_link/naming.py` 把所有非 ASCII 名字在落盘前做百分号编码（`周杰伦 - 七里香.mp3` → `%E5%91%A8%E6%9D%B0%E4%BC%A6 - %E4%B8%83%E9%87%8C%E9%A6%99.mp3`），网页显示时再解码回中文。纯 ASCII 名字不受影响。副作用：主机端 App 自己的列表会显示编码后的名字，还没做解码。
 
 ## 健康检查（30 秒）
 

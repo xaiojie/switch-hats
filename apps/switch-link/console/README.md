@@ -1,19 +1,19 @@
-# Switch Link 0.2.1 主机端
+# Switch Link 0.2.3 主机端
 
 基于 [Sphaira](https://github.com/NaGaa95/sphaira) 的 GPL-3.0 修改版。电脑网页发起任务，**Switch Link 自己通过 HTTP 读取并安装 NSP/XCI**。FTP 只用于 SD 文件管理，无需 DBI，也不通过 FTP 传输安装包。本构建关闭 NSZ/XCZ 支持。
 
 ## 使用与升级
 
-将 `switch-link.nro` 放入独立目录 `/switch/switch-link-021/switch-link-021.nro`，关闭旧程序后，从 homebrew menu 打开 **Switch Link 0.2.1**。电脑和主机连接同一局域网即可自动发现。保持接收页面接收安装任务；按 A 浏览 SD，按 B 返回。新版不能在浏览 SD、弹窗或安装进度框打开时接收新的安装。
+将 `switch-link.nro` 放入独立目录 `/switch/switch-link-023/switch-link-023.nro`，关闭旧程序后，从 homebrew menu 打开 **Switch Link 0.2.3**。电脑和主机连接同一局域网即可自动发现。保持接收页面接收安装任务；按 A 浏览 SD，按 B 返回。新版不能在浏览 SD、弹窗或安装进度框打开时接收新的安装。
 
-不要覆盖正在运行的旧版 NRO；旧版 RomFS 可能仍在读取它。源码构建产物在 `../releases/0.2.1/`；该发布目录同时提供对应源码与校验值。升级前可备份旧版，用户已确认使用新版后可清理旧目录。
+不要覆盖正在运行的旧版 NRO；旧版 RomFS 可能仍在读取它。源码构建产物在 `../releases/0.2.3/`；该发布目录同时提供对应源码与校验值。升级前可备份旧版，用户已确认使用新版后可清理旧目录。
 
 安装位置强制为 SD。默认允许 emuMMC 安装、不允许 sysMMC 安装，继续遵循上游的安装检查。配置保存在 `/config/switch-link/`，不替换 hbmenu 或 Atmosphere 配置。真实安装仍需用户重新发起；启动不会自动重放上次任务。
 
 ## 通信与结果
 
-- FTP 5000 匿名登录；SD 根目录 `/sdmc:`。0.2.1 关闭 FTP 虚拟安装入口。
-- UDP 28771 广播原有设备标识、FTP 和真实任务进度，新增 `app_version:0.2.1`、`http_install_supported:true`、`http_install_ready`、`command_port:28772`、`http_formats:["nsp","xci"]`。
+- FTP 5000 匿名登录；SD 根目录 `/sdmc:`。0.2.3 关闭 FTP 虚拟安装入口。
+- UDP 28771 广播原有设备标识、FTP 和真实任务进度，新增 `app_version:0.2.3`、`http_install_supported:true`、`http_install_ready`、`command_port:28772`、`http_formats:["nsp","xci"]`。
 - UDP 28772 接收 `switch-link-install` 命令，同时保留原 `switch-link-task` 进度消息。非阻塞接收，每帧最多 8 包；安装命令最多 4096 字节，进度最多 2048 字节。
 - 安装命令绑定本机 `device_id`、32 位十六进制任务号、UTF-8 至多 200 字节的文件名、完整 `wire_name` 和正整数大小（至多 128 GiB）。拒绝控制字符、路径、重复 JSON 字段、不支持的后缀和非法范围。
 - `url` 必须为 UDP 发送方的 IPv4 HTTP 地址，路径 `/link-files/<id>/<64hex token>/<百分号编码的原文件名>`。`result_url` 必须同源，路径 `/link-result/<id>/<同一token>`。拒绝凭据、查询参数、片段和跨源地址；原生安装请求禁止重定向。文件按 HTTP Range 随机读取，限制在已验证大小内。
