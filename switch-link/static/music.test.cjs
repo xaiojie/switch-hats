@@ -20,5 +20,3 @@ test('music tab explicitly chooses directory, edits sources and reports sync rej
  await page.setViewportSize({width:390,height:844});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
  }finally{await browser.close();server.closeAllConnections();await new Promise(r=>server.close(r));}
 });
-
-

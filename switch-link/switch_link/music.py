@@ -202,7 +202,7 @@ class MusicLibrary:
                     if text.startswith('/music-file/'):
                         if not re.fullmatch('/music-file/[a-f0-9]{32}',text): raise MusicError('音乐资源地址不合法')
                         self.file(text.rsplit('/',1)[1])
-                    elif text.startswith('sdmc:/'): 
+                    elif text.startswith('sdmc:/'):
                         if '..' in text.split('/'): raise MusicError('SD 路径不合法')
                     else: _url(text)
             tracks[identity]=dict(entry)
