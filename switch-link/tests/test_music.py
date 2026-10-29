@@ -104,6 +104,7 @@ class MusicApiTests(unittest.TestCase):
 class MusicSafetyTests(MusicTests):
     def test_asset_identity_survives_restart_without_selected_root(self):
         href=self.music.upload_asset('lyrics',b'[00:01]hello',self.music.id)
+        self.music.set_overrides({'version':1,'tracks':{'sd:test':{'lyrics':href}}})
         restored=MusicLibrary(self.base/'config')
         self.assertEqual(restored.file(href.rsplit('/',1)[1]).read_bytes(),b'[00:01]hello')
     def test_sync_expands_desktop_overrides_to_saved_source_identity(self):
@@ -132,3 +133,98 @@ class MusicSafetyTests(MusicTests):
         self.assertNotEqual(current['library_id'],old['library_id'])
         with self.assertRaises(MusicError): self.music.file(identity)
         with self.assertRaises(MusicError): self.music.upload_asset('lyrics',b'hello',old['library_id'])
+
+class MusicReviewFixTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp=tempfile.TemporaryDirectory(); self.base=Path(self.tmp.name)
+        self.root=self.base/'songs'; self.root.mkdir()
+    def tearDown(self): self.tmp.cleanup()
+    def test_m3u_override_matches_native_fnv1a64_resolved_audio_url(self):
+        music=MusicLibrary(self.base/'config');(self.root/'x.mp3').write_bytes(b'audio')
+        track=music.configure(str(self.root),music.id)['tracks'][0]
+        base='http://127.0.0.1:1234'
+        music.set_sources({'version':1,'sources':[{'id':'m3u','name':'M3U','url':base+'/music-list.m3u8','enabled':True},{'id':'json','name':'JSON','url':base+'/music-library.json','enabled':True}]})
+        music.set_overrides({'version':1,'tracks':{track['id']:{'album':'Edited','lyrics':'https://example.org/x.lrc'}}})
+        audio=music.m3u(base).decode().splitlines()[-1]
+        # Native media.cpp hash(): FNV-1a64 over resolved URL UTF-8 bytes, lowercase padded hex.
+        digest=14695981039346656037
+        for byte in audio.encode(): digest=((digest^byte)*1099511628211)&0xffffffffffffffff
+        class Peer:
+            def __init__(self): self.payloads={}
+            def list(self,path): return [{'name':'config'},{'name':'papa-walkman'}]
+            def upload(self,source,target,overwrite=False): self.payloads[target]=Path(source).read_bytes();return {}
+            def download(self,path,writer):writer(self.payloads[path])
+        peer=Peer();music.sync(peer,base)
+        tracks=json.loads(peer.payloads['/config/papa-walkman/overrides.json'])['tracks']
+        self.assertEqual(tracks['cloud:m3u:'+format(digest,'016x')]['album'],'Edited')
+        self.assertEqual(tracks['cloud:json:'+track['id']]['album'],'Edited')
+        self.assertNotIn('cloud:m3u:'+track['id'],tracks)
+    def test_every_truncated_id3_header_and_persisted_root_are_safe(self):
+        header=b'ID3\x03\0\0\0\0\0\0'
+        for length in range(10):(self.root/('short%d.mp3'%length)).write_bytes(header[:length])
+        music=MusicLibrary(self.base/'config')
+        state=music.configure(str(self.root),music.id)
+        self.assertEqual(len(state['tracks']),10)
+        restored=MusicLibrary(self.base/'config')
+        self.assertEqual(len(restored.snapshot()['tracks']),10)
+    def test_cache_reclaims_replacements_but_keeps_overrides_and_source_files(self):
+        music=MusicLibrary(self.base/'config',cache_budget=30)
+        (self.root/'x.mp3').write_bytes(b'original');track=music.configure(str(self.root),music.id)['tracks'][0]
+        original=music.upload_asset('lyrics',b'old lyrics',music.id)
+        music.set_overrides({'version':1,'tracks':{track['id']:{'lyrics':original}}})
+        for i in range(12):
+            href=music.upload_asset('lyrics',('new lyrics '+str(i)).encode(),music.id)
+            music.set_overrides({'version':1,'tracks':{track['id']:{'lyrics':href}}})
+            self.assertLessEqual(sum(p.stat().st_size for p in (music.data/'assets').iterdir()),30)
+        with self.assertRaises(MusicError):music.file(original.rsplit('/',1)[1])
+        self.assertEqual((self.root/'x.mp3').read_bytes(),b'original')
+        restored=MusicLibrary(self.base/'config',cache_budget=30)
+        self.assertEqual(restored.file(href.rsplit('/',1)[1]).read_bytes(),b'new lyrics 11')
+        self.assertLessEqual(len(restored.files),2)
+    def test_active_asset_is_not_deleted_and_capacity_failure_is_explicit(self):
+        music=MusicLibrary(self.base/'config',cache_budget=13)
+        href=music.upload_asset('lyrics',b'active lyrics',music.id)
+        path,reader=music.open_file(href.rsplit('/',1)[1])
+        try:
+            with self.assertRaisesRegex(MusicError,'缓存'):
+                music.upload_asset('lyrics',b'new lyrics',music.id)
+            self.assertTrue(path.exists());self.assertEqual(reader.read(),b'active lyrics')
+        finally:reader.close()
+        new=music.upload_asset('lyrics',b'new lyrics',music.id)
+        self.assertEqual(music.file(new.rsplit('/',1)[1]).read_bytes(),b'new lyrics')
+    def test_root_change_reclaims_embedded_assets_and_orphan_capabilities(self):
+        music=MusicLibrary(self.base/'config',cache_budget=40)
+        def song(root,text):
+            data=b'\x03eng\0'+text
+            frame=b'USLT'+len(data).to_bytes(4,'big')+b'\0\0'+data
+            (root/'x.mp3').write_bytes(b'ID3\x03\0\0'+bytes([0,0,0,len(frame)])+frame)
+        song(self.root,b'old words'); old=music.configure(str(self.root),music.id)['tracks'][0]['lyrics']
+        other=self.base/'other';other.mkdir();song(other,b'new words')
+        music.configure(str(other),music.id)
+        with self.assertRaises(MusicError):music.file(old.rsplit('/',1)[1])
+        self.assertEqual(len(list((music.data/'assets').iterdir())),1)
+    def test_budget_failure_preserves_referenced_override_and_previous_editor_upload(self):
+        music=MusicLibrary(self.base/'config',cache_budget=24)
+        pinned=music.upload_asset('lyrics',b'pinned',music.id)
+        music.set_overrides({'version':1,'tracks':{'sd:pinned':{'lyrics':pinned}}})
+        pending=music.upload_asset('lyrics',b'pending',music.id)
+        with self.assertRaisesRegex(MusicError,'缓存'):
+            music.upload_asset('lyrics',b'x'*25,music.id)
+        for href,content in ((pinned,b'pinned'),(pending,b'pending')):
+            self.assertEqual(music.file(href.rsplit('/',1)[1]).read_bytes(),content)
+    def test_unassociated_uploads_are_reclaimed_and_not_exposed_after_restart(self):
+        music=MusicLibrary(self.base/'config',cache_budget=30)
+        orphan=music.upload_asset('lyrics',b'orphan',music.id)
+        restored=MusicLibrary(self.base/'config',cache_budget=30)
+        self.assertEqual(list((music.data/'assets').iterdir()),[])
+        with self.assertRaises(MusicError):restored.file(orphan.rsplit('/',1)[1])
+    def test_active_reader_survives_root_switch_then_reclaims_cache_on_close(self):
+        music=MusicLibrary(self.base/'config',cache_budget=30)
+        href=music.upload_asset('lyrics',b'active',music.id)
+        path,reader=music.open_file(href.rsplit('/',1)[1])
+        try:
+            music.configure(str(self.root),music.id)
+            self.assertTrue(path.exists()); self.assertEqual(reader.read(),b'active')
+            with self.assertRaises(MusicError):music.file(href.rsplit('/',1)[1])
+        finally:reader.close()
+        self.assertFalse(path.exists())

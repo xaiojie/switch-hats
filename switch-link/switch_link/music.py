@@ -13,6 +13,22 @@ MAX_LYRICS = 512 * 1024
 ASSETS = {'.jpg', '.jpeg', '.png', '.lrc', '.txt'}
 
 class MusicError(ValueError): pass
+class CacheFull(MusicError): pass
+
+class _ActiveReader:
+    """Keep an opened HTTP asset pinned until the response closes it."""
+    def __init__(self, owner, path, stream):
+        self.owner, self.path, self.stream = owner, path, stream
+    def __getattr__(self, name): return getattr(self.stream, name)
+    def __enter__(self): return self
+    def __exit__(self, *args): self.close()
+    def close(self):
+        with self.owner.lock:
+            if self.stream.closed: return
+            self.stream.close()
+            self.owner.active[self.path] -= 1
+            if not self.owner.active[self.path]: del self.owner.active[self.path]
+            self.owner._restore_assets()
 
 def _save(path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -48,7 +64,7 @@ def metadata(path):
     result = {'title':path.stem, 'artist':'', 'album':'', 'duration':None}
     with path.open('rb') as stream:
         header=stream.read(10)
-        if header[:3] == b'ID3' and header[3] in (3,4) and all(b<128 for b in header[6:10]):
+        if len(header) == 10 and header[:3] == b'ID3' and header[3] in (3,4) and all(b<128 for b in header[6:10]):
             size=sum(b << (7*(3-i)) for i,b in enumerate(header[6:10]))
             if size <= MAX_TAG:
                 data=stream.read(size); pos=0
@@ -92,9 +108,11 @@ def _url(value):
     return value
 
 class MusicLibrary:
-    def __init__(self, data):
+    def __init__(self, data, cache_budget=512 * 1024 * 1024):
         self.data=Path(data); self.data.mkdir(parents=True,exist_ok=True)
         self.lock=threading.RLock(); self.root=None; self.id='unconfigured'; self.tracks=[]; self.files={}
+        self.cache_budget=max(0, int(cache_budget))
+        self.pending_assets={}; self.building_assets=set(); self.rollback_assets=set(); self.active={}
         self.sources=_load(self.data/'sources.json',{'version':1,'sources':[]})
         self.overrides=_load(self.data/'overrides.json',{'version':1,'tracks':{}})
         setting=_load(self.data/'library.json',{})
@@ -109,11 +127,17 @@ class MusicLibrary:
             self.assert_id(expected)
             if not isinstance(root,str) or not Path(root).is_absolute() or not Path(root).is_dir(): raise MusicError('请选择存在的电脑音乐文件夹绝对路径')
             previous=(self.root,self.id,self.tracks,self.files)
+            self.rollback_assets=self._asset_references()
+            pending=self.pending_assets; self.pending_assets={}
             try:
                 self._scan(Path(root).resolve()); _save(self.data/'library.json',{'root':str(self.root)})
             except Exception:
                 self.root,self.id,self.tracks,self.files=previous
+                self.pending_assets=pending
                 raise
+            finally:
+                self.rollback_assets=set(); self.building_assets=set()
+                self._restore_assets()
             return self.snapshot()
     def _safe(self,path,root):
         resolved=path.resolve()
@@ -130,8 +154,15 @@ class MusicLibrary:
     def _cache(self,data,suffix):
         directory=self.data/'assets'; directory.mkdir(exist_ok=True)
         path=directory/(hashlib.sha256(data).hexdigest()+suffix)
-        if not path.exists(): path.write_bytes(data)
-        return self._register(path,directory.resolve())
+        href='/music-file/'+hashlib.sha256(('assets\0'+str(path.resolve())).encode()).hexdigest()[:32]
+        self.building_assets.add(href)
+        try:
+            self._restore_assets(required=0 if path.exists() else len(data))
+            if not path.exists(): path.write_bytes(data)
+            return self._register(path,directory.resolve())
+        except Exception:
+            self.building_assets.discard(href)
+            raise
     def _scan(self,root):
         self.root=root; self.id=hashlib.sha256(str(root).casefold().encode()).hexdigest()[:24]
         self.tracks=[]; self.files={}
@@ -150,14 +181,47 @@ class MusicLibrary:
                         if asset.is_file() and asset.stat().st_size<=MAX_TAG:
                             info[key]=self._register(asset,root); break
                 self.tracks.append(info)
+            except CacheFull: raise
             except (OSError,MusicError): continue
+            finally: self.building_assets=set()
         # Restore uploaded asset capabilities after restart/rescan.
         self._restore_assets()
-    def _restore_assets(self):
+    def _asset_references(self):
+        refs=set(self.pending_assets.values()) | self.building_assets | self.rollback_assets
+        for entry in self.tracks + list(self.overrides['tracks'].values()):
+            for key in ('cover','lyrics'):
+                href=entry.get(key,'')
+                if href.startswith('/music-file/'): refs.add(href)
+        return refs
+    def _restore_assets(self, required=0):
+        """Reclaim only managed, unreferenced, closed cache files; never source music."""
         directory=self.data/'assets'
+        root=directory.resolve(); refs=self._asset_references(); entries=[]
+        self.files={identity:entry for identity,entry in self.files.items() if entry[1] != root}
         if directory.is_dir():
             for asset in directory.iterdir():
-                if asset.suffix in ASSETS: self._register(asset,directory.resolve())
+                if asset.is_symlink() or not asset.is_file() or not re.fullmatch(r'[a-f0-9]{64}\.(?:png|jpg|jpeg|lrc|txt)',asset.name): continue
+                try:
+                    asset=self._safe(asset,root)
+                    href='/music-file/'+hashlib.sha256(('assets\0'+str(asset)).encode()).hexdigest()[:32]
+                    entries.append((asset,href,asset.stat().st_size))
+                except OSError: continue
+        pinned=sum(size for asset,href,size in entries if href in refs or asset in self.active)
+        if pinned+required>self.cache_budget:
+            raise CacheFull('音乐缓存空间不足：已保留引用或正在读取的资源，请移除旧资源引用后重试')
+        total=pinned
+        for asset,href,size in entries:
+            if href in refs: self._register(asset,root)
+            elif asset not in self.active:
+                try: asset.unlink()
+                except OSError: total+=size  # Windows may have an external reader open.
+        if total+required>self.cache_budget:
+            raise CacheFull('音乐缓存仍在被其他程序使用，暂时无法回收，请稍后重试')
+    def open_file(self,identity):
+        with self.lock:
+            path=self.file(identity); stream=path.open('rb')
+            self.active[path]=self.active.get(path,0)+1
+            return path,_ActiveReader(self,path,stream)
     def file(self,identity):
         with self.lock:
             if not re.fullmatch('[a-f0-9]{32}',identity or '') or identity not in self.files: raise MusicError('音乐文件不存在')
@@ -208,6 +272,10 @@ class MusicLibrary:
             tracks[identity]=dict(entry)
         with self.lock:
             self.overrides={'version':1,'tracks':tracks}; _save(self.data/'overrides.json',self.overrides)
+            # Associated uploads no longer need their temporary editor pins.
+            self.pending_assets={kind:href for kind,href in self.pending_assets.items()
+                                 if not any(href == entry.get(kind) for entry in tracks.values())}
+            self._restore_assets()
         return self.overrides
     def upload_asset(self,kind,data,expected):
         with self.lock:
@@ -221,16 +289,31 @@ class MusicLibrary:
                 except UnicodeError: raise MusicError('歌词需要 UTF-8 文本')
                 suffix='.lrc'
             else: raise MusicError('资源类型或大小不合法')
-            return self._cache(data,suffix)
+            previous=dict(self.pending_assets)
+            self.pending_assets.pop(kind,None)
+            try:
+                href=self._cache(data,suffix); self.pending_assets[kind]=href
+                return href
+            except Exception:
+                self.pending_assets=previous
+                raise
+            finally:
+                self.building_assets=set(); self._restore_assets()
     def sync(self,peer,base):
         with self.lock:
             overrides=json.loads(json.dumps(self.overrides))
-            local_ids={track['id'] for track in self.tracks}
+            local_tracks={track['id']:track for track in self.tracks}
             for source in self.sources['sources']:
                 if source['url'] in (base+'/music-library.json',base+'/music-list.m3u8'):
                     for identity,fields in self.overrides['tracks'].items():
-                        if identity in local_ids:
-                            overrides['tracks']['cloud:'+source['id']+':'+identity]=dict(fields)
+                        if identity in local_tracks:
+                            native_id=identity
+                            if source['url']==base+'/music-list.m3u8':
+                                digest=14695981039346656037
+                                for byte in (base+local_tracks[identity]['audio']).encode('utf-8'):
+                                    digest=((digest^byte)*1099511628211)&0xffffffffffffffff
+                                native_id=format(digest,'016x')
+                            overrides['tracks']['cloud:'+source['id']+':'+native_id]=dict(fields)
             for entry in overrides['tracks'].values():
                 for key in ('cover','lyrics'):
                     value=entry.get(key,'')

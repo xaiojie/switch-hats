@@ -168,8 +168,7 @@ class HttpShare:
                     return self.body(share.music.m3u(share.url), 'audio/x-mpegurl; charset=utf-8')
                 if path.startswith('/music-file/') and share.music:
                     try:
-                        target = share.music.file(path[len('/music-file/'):])
-                        source = target.open('rb')
+                        target, source = share.music.open_file(path[len('/music-file/'):])
                     except (ValueError, OSError):
                         return self.send_error(404)
                 elif path.startswith('/link-files/') and share.link_jobs:
