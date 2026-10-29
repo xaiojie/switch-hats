@@ -40,7 +40,7 @@ static bool seekFile(FILE* f,uint64_t n){
 #endif
 }
 struct Request {
- std::mutex mutex;std::condition_variable cv;std::atomic<bool> stop{false};
+ std::mutex mutex,cancelMutex;std::condition_variable cv;std::atomic<bool> stop{false};
  const std::atomic<uint64_t>* cancel=nullptr;uint64_t expected=0;
  std::shared_ptr<StreamStatus> status;StreamSnapshot snapshot;StreamOptions options;
  FILE* cache=nullptr;uint64_t pos=0,end=0,start=0,offset=0,body=0,length=0,rangeStart=0,rangeEnd=0,rangeTotal=0,previousTotal=0;
@@ -59,7 +59,9 @@ struct Request {
   cachePath=dir+"/papa-stream-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count())+"-"+std::to_string(++id)+".tmp";
   cache=OpenUtf8File(cachePath,"w+b");return cache!=nullptr;
  }
- bool cancelled(){return stop.load()||(cancel&&cancel->load()!=expected);}
+ // Lock order is mutex -> cancelMutex. progress() takes only cancelMutex.
+ bool cancelled(){std::lock_guard<std::mutex> lock(cancelMutex);return stop.load()||(cancel&&cancel->load()!=expected);}
+ void RetireCancellation(){std::lock_guard<std::mutex> lock(cancelMutex);stop=true;cancel=nullptr;}
  void publish(){if(stop.load())return;snapshot.cachedStart=start;snapshot.cachedEnd=end;snapshot.seekable=end>start;status->Update(snapshot);}
  void fail(const std::string& e){snapshot.error=e;done=true;snapshot.buffering=false;publish();cv.notify_all();}
  static int progress(void* u,curl_off_t,curl_off_t,curl_off_t,curl_off_t){return static_cast<Request*>(u)->cancelled()?1:0;}
@@ -113,14 +115,14 @@ struct Request {
   {std::lock_guard<std::mutex> lock(mutex);if(finalUrl)snapshot.finalUrl=finalUrl;
    snapshot.cancelled=cancelled();snapshot.buffering=false;done=true;
    if(snapshot.error.empty()&&!snapshot.cancelled){if(result!=CURLE_OK)snapshot.error="HTTP "+std::to_string(code)+": "+(err[0]?err:curl_easy_strerror(result))+"; retry track";
-    else if(hasLength&&body!=length)snapshot.error="Incomplete HTTP file; retry track";else snapshot.eof=true;}
+    else if((hasLength&&body!=length)||(code==206&&body!=rangeEnd-rangeStart+1))snapshot.error="Incomplete HTTP file; retry track";else snapshot.eof=true;}
    publish();cv.notify_all();}
   curl_easy_cleanup(c);
  }
 };
 struct ByteSource::Impl {FILE* file=nullptr;std::shared_ptr<Request> request;std::shared_ptr<StreamStatus> status;StreamSnapshot local;const std::atomic<uint64_t>* cancel=nullptr;uint64_t expected=0;};
 ByteSource::ByteSource():p_(new Impl){}ByteSource::~ByteSource(){Close();}
-void ByteSource::Close(){if(p_->request){{std::lock_guard<std::mutex> lock(p_->request->mutex);p_->request->stop=true;p_->request->cv.notify_all();}p_->request.reset();}if(p_->file)std::fclose(p_->file);p_->file=nullptr;}
+void ByteSource::Close(){if(p_->request){{std::lock_guard<std::mutex> lock(p_->request->mutex);p_->request->RetireCancellation();p_->request->cv.notify_all();}p_->request.reset();}if(p_->file)std::fclose(p_->file);p_->file=nullptr;p_->cancel=nullptr;}
 bool ByteSource::Open(const std::string& path,const std::atomic<uint64_t>* cancel,uint64_t expected,std::shared_ptr<StreamStatus> status,StreamOptions opts){
  Close();p_->status=status?status:std::make_shared<StreamStatus>();p_->local={};p_->cancel=cancel;p_->expected=expected;p_->status->Update({});
  if(cancel&&cancel->load()!=expected){p_->local.cancelled=true;p_->status->Update(p_->local);return false;}
@@ -131,12 +133,14 @@ bool ByteSource::Open(const std::string& path,const std::atomic<uint64_t>* cance
  r->snapshot.buffering=true;r->publish();p_->request=r;std::thread([r](){r->run();}).detach();return true;
 }
 size_t ByteSource::Read(void* out,size_t count){
- if(p_->cancel&&p_->cancel->load()!=p_->expected){if(p_->request){std::lock_guard<std::mutex> lock(p_->request->mutex);p_->request->snapshot.cancelled=true;p_->request->snapshot.buffering=false;p_->request->publish();}else{p_->local.cancelled=true;p_->status->Update(p_->local);}return 0;}
+ if(!count)return 0;
+ if(!p_->request&&p_->cancel&&p_->cancel->load()!=p_->expected){p_->local.cancelled=true;p_->status->Update(p_->local);return 0;}
  if(p_->file){auto n=std::fread(out,1,count,p_->file);p_->local.eof=std::feof(p_->file)!=0;if(std::ferror(p_->file))p_->local.error="File read failed";p_->status->Update(p_->local);return n;}
  auto r=p_->request;if(!r)return 0;std::unique_lock<std::mutex> lock(r->mutex);
  while(r->pos>=r->end&&!r->done&&!r->cancelled()){r->snapshot.buffering=true;r->publish();r->cv.wait_for(lock,std::chrono::milliseconds(25));}
  if(r->cancelled()){r->snapshot.cancelled=true;r->snapshot.buffering=false;r->publish();return 0;}
  if(r->pos<r->start){r->fail("Seek outside retained stream cache");return 0;}
+ if(r->pos>=r->end)return 0;
  size_t n=static_cast<size_t>(std::min<uint64_t>(count,r->end-r->pos));n=std::min<uint64_t>(n,r->options.cacheBytes-r->pos%r->options.cacheBytes);
  if(n&&(!seekFile(r->cache,r->pos%r->options.cacheBytes)||std::fread(out,1,n,r->cache)!=n)){r->fail("Stream cache read failed");return 0;}
  r->pos+=n;r->snapshot.buffering=false;r->publish();r->cv.notify_all();return n;
@@ -145,11 +149,18 @@ bool ByteSource::Seek(uint64_t offset){
  if(p_->file)return seekFile(p_->file,offset);
  auto old=p_->request;if(!old)return false;std::unique_lock<std::mutex> lock(old->mutex);
  if(old->cancelled())return false;
+ if(old->snapshot.totalBytes&&offset>old->snapshot.totalBytes)return false;
+ // Exact EOF needs no invalid Range request; finish the current transport instead.
+ if(old->snapshot.totalBytes&&offset==old->snapshot.totalBytes){old->pos=offset;old->cv.notify_all();return true;}
  if(offset>=old->start&&offset<=old->end){old->pos=offset;old->cv.notify_all();return true;}
  if(!old->snapshot.rangeSupported)return false;
- auto r=std::make_shared<Request>();r->url=old->url;r->cancel=old->cancel;r->expected=old->expected;r->status=old->status;r->options=old->options;r->previousEtag=old->etag;r->previousTotal=old->snapshot.totalBytes;
+ auto r=std::make_shared<Request>();r->url=old->url;{std::lock_guard<std::mutex> cancelLock(old->cancelMutex);r->cancel=old->cancel;}r->expected=old->expected;r->status=old->status;r->options=old->options;r->previousEtag=old->etag;r->previousTotal=old->snapshot.totalBytes;
  r->offset=r->pos=r->start=r->end=offset;if(!r->createCache())return false;
- old->stop=true;old->cv.notify_all();r->snapshot.buffering=true;r->publish();p_->request=r;lock.unlock();std::thread([r](){r->run();}).detach();return true;
+ old->RetireCancellation();old->cv.notify_all();r->snapshot.buffering=true;r->publish();p_->request=r;lock.unlock();std::thread([r](){r->run();}).detach();return true;
+}
+bool ByteSource::Finish(){
+ unsigned char bytes[8192];while(Read(bytes,sizeof bytes)){}
+ auto status=Status();return status.eof&&status.error.empty()&&!status.cancelled;
 }
 StreamSnapshot ByteSource::Status()const{return p_->status?p_->status->Snapshot():StreamSnapshot{};}
 bool ByteSource::IsRemote()const{return bool(p_->request);}

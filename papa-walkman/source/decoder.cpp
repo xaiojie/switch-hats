@@ -8,8 +8,10 @@
 #define MINIMP3_IMPLEMENTATION
 #define MINIMP3_NO_STDIO
 #define MINIMP3_ONLY_MP3
+#define MINIMP3_IO_SIZE (32*1024)
 #define MINIMP3_SCAN_LIMIT (256*1024)
 #include "minimp3_ex.h"
+static_assert(MINIMP3_IO_SIZE>MINIMP3_BUF_SIZE,"MP3 IO buffer must hold multiple frames");
 namespace papa {
 struct Decoder::Impl {
     ByteSource source; bool remote=false; mp3dec_ex_t dec{}; mp3dec_io_t io{}; bool open=false;
@@ -18,7 +20,13 @@ struct Decoder::Impl {
     bool Cancelled() const {return cancel&&cancel->load()!=expected;}
     static size_t Read(void* out,size_t size,void* user) {
         auto p=static_cast<Impl*>(user);
-        return p->Cancelled()?0:p->source.Read(out,std::min<size_t>(size,16384));
+        size_t filled=0;
+        while(filled<size&&!p->Cancelled()){
+            size_t n=p->source.Read(static_cast<unsigned char*>(out)+filled,size-filled);
+            if(!n)break;
+            filled+=n;
+        }
+        return filled;
     }
     static int Seek(uint64_t offset,void* user) {
         auto p=static_cast<Impl*>(user); if(p->Cancelled()) return -1;
@@ -29,6 +37,8 @@ Decoder::Decoder():p_(new Impl){} Decoder::~Decoder(){Close();}
 bool Decoder::Open(const std::string& path,const std::atomic<uint64_t>* cancel,uint64_t expected,std::shared_ptr<StreamStatus> status,StreamOptions options){
     Close(); p_->readFrames=p_->finalFrames=0;p_->error.clear(); p_->cancel=cancel; p_->expected=expected;
     if(p_->Cancelled()){p_->error="操作已取消";return false;}
+    // Retain the opening IO window while minimp3 seeks back to its first frame.
+    options.cacheBytes=std::max<uint64_t>(options.cacheBytes,4*MINIMP3_IO_SIZE);
     if(!p_->source.Open(path,cancel,expected,status,options)){p_->error=p_->source.Status().error;return false;}
     p_->remote=p_->source.IsRemote();
     p_->io={Impl::Read,p_.get(),Impl::Seek,p_.get()};
@@ -64,6 +74,7 @@ bool Decoder::Seek(double seconds){
 size_t Decoder::Read(int16_t* samples,size_t frames){
     if(!p_->open)return 0;
     size_t n=mp3dec_ex_read(&p_->dec,samples,frames*Channels());
+    if(!n&&p_->remote)p_->source.Finish();
     auto status=p_->source.Status();if(!status.error.empty())p_->error=status.error;
     if(status.cancelled)p_->error="Request cancelled";
     if(p_->dec.last_error&&p_->error.empty())p_->error="MP3 解码中断，请换一首";

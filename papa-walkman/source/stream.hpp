@@ -31,7 +31,10 @@ public:
  bool Open(const std::string&,const std::atomic<uint64_t>* cancel=nullptr,uint64_t expected=0,
            std::shared_ptr<StreamStatus> status={},StreamOptions options={});
  // Single consumer. Read blocks through temporary starvation; zero means terminal status.
- // Close detaches cancellation promptly; the request owns its cache until cleanup finishes.
+ // Keep the cancellation atomic alive until Close returns; no concurrent consumer calls.
+ // Close retires all worker access to that atomic before detaching; the request owns its cache until cleanup finishes.
+ // Finish consumes trailing transport bytes and verifies completion; it remains cancellable.
+ bool Finish();
  void Close();size_t Read(void*,size_t);bool Seek(uint64_t);
  StreamSnapshot Status() const;bool IsRemote() const;
 private:struct Impl;std::unique_ptr<Impl> p_;
