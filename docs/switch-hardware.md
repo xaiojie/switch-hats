@@ -89,7 +89,7 @@ file=payload.bin
 | 目录 / 文件 | 说明 |
 |---|---|
 | `switch-link-021/` | **Switch Link 0.2.1**（本项目，HTTP 原生装 NSP/XCI + FTP 管理） |
-| `switch-link-022-utf8/` | 0.2.2 的 UTF-8 诊断版本，调试用 |
+| `switch-link-022-utf8/` | 调试包，**没有 0.2.2 这个功能版本**：`console/diagnose_unicode.py` 把 0.2.1 源码打上 UTF-8 路径诊断日志、顺手把版本号改成 "0.2.2 UTF8" 编出来的（4,039,881 B） |
 | `papa-walkman/` | **爬爬的随身听**（本项目，MP3/FLAC/WAV/OGG 播放器） |
 | `DBI/` | DBI 912，用于 MTP/FTP/装包（备选手段） |
 | `sphaira/` | Switch Link 的上游壳（文件管理） |
@@ -125,6 +125,7 @@ file=payload.bin
 5. **emuMMC 是文件型**：`emuMMC/SD00` 里的 `Nintendo/` 不要手动动，虚拟系统坏了大不了重做（`backup/` 有备份）。
 6. **系统时间要准**：游戏和 TLS 都依赖它，偏差大了 Switch Link/随身听都可能失败；`QuickNTP.ovl` 可一键对时。
 7. **固件 22.5.0 未升级**：升级要 `Daybreak`，且 HATS 包要支持新固件（当前支持到 23.0.1）。不要为了装游戏升系统。
+8. **中文文件名经 Switch Link 的 FTP 写不进卡**（建文件/建目录/改名全失败，结果是 `0x202 = FsError_PathNotFound`；纯 ASCII 路径正常）。这是当前已知缺陷，`/sdmc:/config/switch-link/utf8-path.log` 有现场日志：完整 UTF-8 字节送到了 `fsFs*`，仍返回 PathNotFound。传文件暂时用 ASCII 文件名，或用 DBI/sphaira 的 FTP。
 
 ## 健康检查（30 秒）
 
