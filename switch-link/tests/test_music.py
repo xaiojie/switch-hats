@@ -228,3 +228,36 @@ class MusicReviewFixTests(unittest.TestCase):
             with self.assertRaises(MusicError):music.file(href.rsplit('/',1)[1])
         finally:reader.close()
         self.assertFalse(path.exists())
+
+class MusicPendingRollbackTests(unittest.TestCase):
+    def test_windows_locked_orphan_cannot_destroy_rejected_uploads_previous_pending_file(self):
+        import hashlib
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as temporary:
+            music=MusicLibrary(Path(temporary)/'config',cache_budget=24)
+            pinned=music.upload_asset('lyrics',b'pinned',music.id)
+            music.set_overrides({'version':1,'tracks':{'sd:pinned':{'lyrics':pinned}}})
+            old=music.upload_asset('lyrics',b'pending',music.id)
+            old_path=music.file(old.rsplit('/',1)[1])
+            orphan_data=b'0123456789'
+            orphan=music.data/'assets'/(hashlib.sha256(orphan_data).hexdigest()+'.lrc')
+            orphan.write_bytes(orphan_data)
+            original_unlink=Path.unlink
+            def locked_unlink(path,*args,**kwargs):
+                if path==orphan:raise PermissionError('synthetic Windows sharing violation')
+                return original_unlink(path,*args,**kwargs)
+            with patch.object(Path,'unlink',locked_unlink):
+                with self.assertRaisesRegex(MusicError,'缓存'):
+                    music.upload_asset('lyrics',b'replacement!',music.id)
+                self.assertEqual(music.pending_assets,{'lyrics':old})
+                self.assertTrue(old_path.exists())
+                self.assertEqual(music.file(old.rsplit('/',1)[1]).read_bytes(),b'pending')
+                self.assertEqual(music.file(pinned.rsplit('/',1)[1]).read_bytes(),b'pinned')
+                self.assertEqual(orphan.read_bytes(),orphan_data)
+            # Once orphan reclamation is possible, the same replacement fits:
+            # pinned6 + replacement12 = 18, and the superseded pending7 is reclaimed.
+            new=music.upload_asset('lyrics',b'replacement!',music.id)
+            self.assertEqual(music.file(new.rsplit('/',1)[1]).read_bytes(),b'replacement!')
+            self.assertFalse(old_path.exists())
+            self.assertFalse(orphan.exists())
+            self.assertLessEqual(sum(p.stat().st_size for p in (music.data/'assets').iterdir()),24)

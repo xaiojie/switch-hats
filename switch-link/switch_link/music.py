@@ -151,13 +151,13 @@ class MusicLibrary:
         identity=hashlib.sha256((namespace+'\0'+str(path)).encode()).hexdigest()[:32]
         self.files[identity]=(path,root)
         return '/music-file/'+identity
-    def _cache(self,data,suffix):
+    def _cache(self,data,suffix,superseded=()):
         directory=self.data/'assets'; directory.mkdir(exist_ok=True)
         path=directory/(hashlib.sha256(data).hexdigest()+suffix)
         href='/music-file/'+hashlib.sha256(('assets\0'+str(path.resolve())).encode()).hexdigest()[:32]
         self.building_assets.add(href)
         try:
-            self._restore_assets(required=0 if path.exists() else len(data))
+            self._restore_assets(required=0 if path.exists() else len(data),superseded=superseded)
             if not path.exists(): path.write_bytes(data)
             return self._register(path,directory.resolve())
         except Exception:
@@ -193,7 +193,7 @@ class MusicLibrary:
                 href=entry.get(key,'')
                 if href.startswith('/music-file/'): refs.add(href)
         return refs
-    def _restore_assets(self, required=0):
+    def _restore_assets(self, required=0, superseded=()):
         """Reclaim only managed, unreferenced, closed cache files; never source music."""
         directory=self.data/'assets'
         root=directory.resolve(); refs=self._asset_references(); entries=[]
@@ -209,14 +209,23 @@ class MusicLibrary:
         pinned=sum(size for asset,href,size in entries if href in refs or asset in self.active)
         if pinned+required>self.cache_budget:
             raise CacheFull('音乐缓存空间不足：已保留引用或正在读取的资源，请移除旧资源引用后重试')
-        total=pinned
+        total=pinned; deferred=[]
         for asset,href,size in entries:
             if href in refs: self._register(asset,root)
             elif asset not in self.active:
+                if href in superseded:
+                    # The editor still needs this physical file if another orphan
+                    # cannot be reclaimed. Establish feasibility before retiring it.
+                    deferred.append((asset,size)); continue
                 try: asset.unlink()
                 except OSError: total+=size  # Windows may have an external reader open.
         if total+required>self.cache_budget:
             raise CacheFull('音乐缓存仍在被其他程序使用，暂时无法回收，请稍后重试')
+        for asset,size in deferred:
+            try: asset.unlink()
+            except OSError: total+=size
+        if total+required>self.cache_budget:
+            raise CacheFull('待替换的音乐缓存仍在被其他程序使用，请稍后重试')
     def open_file(self,identity):
         with self.lock:
             path=self.file(identity); stream=path.open('rb')
@@ -292,7 +301,9 @@ class MusicLibrary:
             previous=dict(self.pending_assets)
             self.pending_assets.pop(kind,None)
             try:
-                href=self._cache(data,suffix); self.pending_assets[kind]=href
+                old=previous.get(kind)
+                href=self._cache(data,suffix,superseded=(old,) if old else ())
+                self.pending_assets[kind]=href
                 return href
             except Exception:
                 self.pending_assets=previous
