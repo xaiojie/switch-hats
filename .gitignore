@@ -22,3 +22,6 @@ __pycache__/
 *.xcz
 *.tik
 *.cert
+
+# Playwright CLI browser-state cache
+.playwright-cli/

@@ -1,5 +1,9 @@
 #include "media.hpp"
+#include "assets.hpp"
+#include <chrono>
+#include <thread>
 #include <cassert>
+#include <algorithm>
 #include <cstdio>
 #include <fstream>
 #include <iostream>
@@ -278,6 +282,24 @@ static bool reviewRegressions() {
   return failed == 0;
 }
 int main(int argc, char **argv) {
+  if(argc==3 && std::string(argv[1])=="--cloud-live") {
+    auto catalog=FetchUrl(argv[2],8*1024*1024);assert(catalog.error.empty());std::string error;
+    auto tracks=ParseCatalog(std::string(catalog.bytes.begin(),catalog.bytes.end()),argv[2],"live",error);assert(error.empty());
+    if(std::string(argv[2])=="https://kiro.papaclaoud.top/library.json"){
+      auto m3u=FetchUrl("https://kiro.papaclaoud.top/library.m3u",8*1024*1024);assert(m3u.error.empty());
+      auto old=ParseCatalog(std::string(m3u.bytes.begin(),m3u.bytes.end()),"https://kiro.papaclaoud.top/library.m3u","live",error);assert(error.empty());
+      size_t matched=0;for(const auto&t:tracks){auto it=std::find_if(old.begin(),old.end(),[&](const Track&x){return x.path==t.path;});assert(it!=old.end()&&it->id==t.id);++matched;}
+      std::cout<<"LIVE JSON/M3U stable identities="<<matched<<"\n";
+    }
+    auto found=std::find_if(tracks.begin(),tracks.end(),[](const Track& track){return track.title.find(u8"菊花台")!=std::string::npos;});assert(found!=tracks.end());
+    MediaCache cache("build-host/media-cloud-live");cache.Warm();
+    ArtworkLoader loader(cache);loader.Request(*found,true);ArtworkSnapshot result;
+    for(int i=0;i<6000;++i){result=loader.Snapshot();if(!result.loading)break;std::this_thread::sleep_for(std::chrono::milliseconds(5));}
+    assert(!result.loading&&result.enrichedTrack);auto track=result.enrichedTrack;
+    std::cout<<"LIVE cloud tracks="<<tracks.size()<<" title_bytes="<<track->title.size()<<" artist_bytes="<<track->artist.size()<<" album_bytes="<<track->album.size()<<" duration="<<track->duration<<" cover="<<bool(result.cover)<<" lyric_lines="<<(result.lyrics?result.lyrics->lines.size():0)<<" lyric_plain_bytes="<<(result.lyrics?result.lyrics->plain.size():0)<<" note="<<result.note<<"\n";
+    assert(result.cover&&!track->artist.empty()&&result.lyrics&&!result.lyrics->lines.empty());
+    assert(result.trackId==found->id&&result.trackPath==found->path);return 0;
+  }
   if (argc == 3 && std::string(argv[1]) == "--smoke") {
     std::ifstream list(argv[2]);
     std::string path;
@@ -300,6 +322,31 @@ int main(int argc, char **argv) {
 
   if (!indexRegressions())
     return 1;
+  std::string cloudError;
+  auto playable = ParseCatalog(R"({"version":1,"tracks":[{"audio":"good.mp3","format":"mp3","switchPlayable":true,"albumArtist":"Album artist","size":321},{"audio":"bad.flac","format":"flac"},{"audio":"disabled.mp3","switchPlayable":false},{"audio":"UPPER.FLAC?token=1"},{"audio":"stream","format":"mp3"}]})", "https://a/library.json", "test", cloudError);
+  assert(cloudError.empty() && playable.size()==2);
+  assert(playable[0].albumArtist=="Album artist" && playable[0].fileSize==321);
+  auto mixedM3u = ParseCatalog("#EXTM3U\n#EXTINF:10,Unsupported\nbad.flac\n#EXTINF:20,Supported\ngood.mp3\n", "https://a/list.m3u", "test", cloudError);
+  assert(cloudError.empty() && mixedM3u.size()==1 && mixedM3u[0].title=="Supported");
+  // ID3 enc0 in the actual cloud library is GBK; preserve readable Chinese.
+  put("build-host/media-cloud-gbk.mp3",tag(frame("TIT2", std::string("\0\xd6\xd0\xce\xc4",5))));
+  assert(ReadMetadata("build-host/media-cloud-gbk.mp3").title == u8"中文");
+  auto extendedCatalog=ParseCatalog("#EXTM3U\n#EXTINF:-1 tvg-logo=\"art.png\",Test artist - Test song - Test album\n#EXTGRP:Test album\nsong.mp3\n", "https://a/list.m3u", "cloud", cloudError);
+  assert(cloudError.empty() && extendedCatalog.size()==1 && extendedCatalog[0].title=="Test song" && extendedCatalog[0].album=="Test album" && extendedCatalog[0].cover=="https://a/art.png");
+  auto externalCatalog=ParseCatalog(R"({"name":"library","base":"https://b/music/","count":1,"tracks":[{"title":"Song","album":"Album","url":"song.mp3","size":1234}]})", "https://a/library.json", "cloud", cloudError);
+  assert(cloudError.empty() && externalCatalog.size()==1 && externalCatalog[0].path=="https://b/music/song.mp3" && externalCatalog[0].fileSize==1234);
+  auto memoryTag=tag(frame("TIT2",std::string("\x03Memory song"))+frame("TLEN",std::string("\x03" "123456"))+frame("USLT",std::string("\x03" "eng\0",5)+"[00:01.00]Original memory lyric"));
+  auto memoryMetadata=ReadMetadataBytes(std::vector<uint8_t>(memoryTag.begin(),memoryTag.end()));
+  assert(memoryMetadata.title=="Memory song" && memoryMetadata.duration==123.456 && memoryMetadata.lyrics.lines.size()==1);
+  memoryTag.pop_back();assert(ReadMetadataBytes(std::vector<uint8_t>(memoryTag.begin(),memoryTag.end())).title.empty());
+  Track exact;exact.title="Test song";exact.artist="Test artist";exact.album="Test album";exact.duration=123;
+  const std::string exactRecord=R"({"trackName":"Test song","artistName":"Test artist","albumName":"Test album","duration":123,"syncedLyrics":"[00:01.00]Original fixture lyric","plainLyrics":"Original fixture lyric","instrumental":false})";
+  assert(ParseExactLyrics(exactRecord,exact).matched && !ParseExactLyrics(exactRecord,exact).text.empty());
+  exact.duration=130;assert(!ParseExactLyrics(exactRecord,exact).matched);exact.duration=123;
+  exact.title="Test song (Live)";assert(!ParseExactLyrics(exactRecord,exact).matched);exact.title="Test song";
+  exact.album="Other album";assert(!ParseExactLyrics(exactRecord,exact).matched);exact.album="Test album";
+  exact.artist.clear();assert(!ParseExactLyrics(exactRecord,exact).matched && ExactLyricsUrl("https://lrclib.net",exact).empty());
+  exact.artist="Test artist";assert(ExactLyricsUrl("https://lrclib.net",exact).find("track_name=Test%20song")!=std::string::npos);
   if (!reviewRegressions())
     return 1;
   auto l = ParseLyrics("\xef\xbb\xbf[ar:Test]\n[offset:250]\n[00:02.50][00:01."
@@ -398,7 +445,7 @@ int main(int argc, char **argv) {
   assert(ReadMetadata("build-host/media-sylt.mp3").lyrics.lines.empty());
   put("build-host/media-latin.mp3",
       tag(frame("TIT2", std::string("\0\xe9", 2))));
-  assert(ReadMetadata("build-host/media-latin.mp3").title == "é");
+  assert(ReadMetadata("build-host/media-latin.mp3", LegacyEncoding::Latin1).title == "é");
   put("build-host/media-utf16be.mp3",
       tag(frame("TIT2", std::string("\x02\x7a\x3c", 3))));
   assert(ReadMetadata("build-host/media-utf16be.mp3").title == "稼");
@@ -448,7 +495,7 @@ int main(int argc, char **argv) {
   std::string uns = frame("TIT2", std::string("\0\xff\0\xe1", 4), true);
   uns[9] = 2;
   put("build-host/media-unsync.mp3", tag(uns, 4));
-  assert(ReadMetadata("build-host/media-unsync.mp3").title == "ÿá");
+  assert(ReadMetadata("build-host/media-unsync.mp3", LegacyEncoding::Latin1).title == "ÿá");
   std::string dli =
       frame("TIT2", std::string("\0\0\0\x06\x03", 5) + "title", true);
   dli[9] = 1;

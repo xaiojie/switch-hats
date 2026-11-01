@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Kiro · 音乐库测试台</title><link rel="icon" href="data:,"><link rel="stylesheet" href="/style.css"></head>
+<body>
+  <header class="masthead"><div class="brand"><span class="brand-mark">K</span><div><p class="eyebrow">PAPA WALKMAN / LIBRARY LAB</p><h1>音乐库测试台</h1></div></div><span class="readonly"><i></i>本地 · 只读测试</span></header>
+  <main>
+    <section class="source-panel" aria-label="连接曲库">
+      <div class="source-title"><div><h2>看看音乐，是否准备好了。</h2><p>同一份真实曲库，检查数据、试听和资源。服务器更新后重新加载。</p></div><div class="segmented" aria-label="曲库格式"><button id="jsonSource" class="active">JSON 曲库</button><button id="m3uSource">M3U 列表</button></div></div>
+      <form id="sourceForm"><label class="url-field"><span>曲库地址</span><input id="sourceUrl" type="url" required spellcheck="false" value="https://kiro.papaclaoud.top/library.json" aria-label="曲库地址"></label><button class="primary" id="loadButton" type="submit">重新加载 ↻</button></form>
+      <div class="connection"><label><input type="checkbox" id="proxyMode"> 通过本地代理读取</label><span id="connectionState" role="status">等待连接</span><button id="corsButton" class="text-button">验证浏览器直连</button></div>
+      <div class="notice hidden" id="loadError" role="alert"></div>
+    </section>
+    <section id="summary" class="summary" aria-label="曲库概况"></section>
+    <div class="workspace">
+      <section class="library-panel panel">
+        <div class="panel-heading"><div><p class="eyebrow">YOUR COLLECTION</p><h2 id="libraryTitle">歌曲列表</h2></div><span class="subtle" id="generated"></span></div>
+        <div class="search-row"><input id="search" type="search" placeholder="搜索歌曲、歌手或专辑" aria-label="搜索歌曲、歌手或专辑"><select id="albumFilter" aria-label="按专辑筛选"><option value="">全部专辑</option></select></div>
+        <div class="filters" id="filters"><button class="chip active" data-filter="all">全部</button><button class="chip" data-filter="cover">缺封面</button><button class="chip" data-filter="lyrics">缺歌词</button><button class="chip" data-filter="metadata">信息不全</button><button class="chip" data-filter="format">Switch 不支持</button></div>
+        <p class="list-caption"><span id="listCount">尚未加载</span><span>点击歌曲，查看与试听</span></p>
+        <div class="track-list" id="trackList" aria-label="歌曲列表"><div class="empty">正在读取真实曲库…</div></div>
+      </section>
+      <aside class="detail-panel panel" aria-label="歌曲详情">
+        <div class="panel-heading"><p class="eyebrow">TRACK INSPECTOR</p><span id="trackFormat" class="badge">未选择</span></div>
+        <div class="artwork"><img id="coverImage" alt="专辑封面" hidden><div id="coverEmpty"><span class="record-disc"></span><span>选择一首歌</span></div></div>
+        <h2 id="trackTitle">从一首歌开始。</h2><p id="trackArtist" class="artist">封面、歌词和音频，一起检查。</p><p id="trackAlbum" class="subtle"></p>
+        <div class="track-badges" id="trackBadges"></div>
+        <button class="primary play-button" id="playButton" disabled>播放试听</button><audio id="audio" controls preload="none" aria-label="音乐试听播放器"></audio>
+        <p id="audioState" class="resource-status" role="status">音频只在你点击播放后开始读取。</p>
+        <div class="lyric-heading"><h3>歌词</h3><span id="lyricKind" class="badge">等待选择</span></div><div id="lyrics" class="lyrics"><p class="empty">这里会显示服务器提供的歌词。</p></div>
+        <details><summary>原始曲目数据</summary><pre id="rawTrack">尚未选择</pre></details>
+      </aside>
+    </div>
+    <section class="panel diagnostics" aria-label="资源检查">
+      <div class="panel-heading"><div><p class="eyebrow">HEALTH CHECK</p><h2>资源真的能打开吗？</h2><p>上面的数字表示“已提供地址”。这里会实际请求资源，并检查音频分段读取。</p></div><div class="actions"><button id="checkSelected" disabled>检查当前歌曲</button><button id="checkAll" disabled>检查全部封面与歌词</button><button id="exportReport" disabled>导出检查报告 ↓</button></div></div>
+      <p id="checkProgress" class="subtle" role="status">尚未运行资源检查。检查通过本地服务发送，不等同于浏览器跨域验证。</p>
+      <div class="check-results" id="checkResults"></div>
+      <details><summary>曲库响应与兼容性</summary><pre id="responseInfo">等待加载</pre></details>
+    </section>
+    <footer><span>Kiro Library Lab · 仅测试，不改写曲库</span><span>浏览器能播放的格式，不一定受当前 Switch 播放器支持。</span></footer>
+  </main>
+  <script type="module" src="/app.mjs"></script>
+</body></html>

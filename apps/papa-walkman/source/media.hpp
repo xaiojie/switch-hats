@@ -20,6 +20,7 @@ Lyrics ParseLyrics(const std::string &text);
 struct Metadata {
   std::string title, artist, album, albumArtist, year, coverMime, rawLyrics;
   int track = 0, disc = 0;
+  double duration = 0;
   std::vector<unsigned char> cover;
   Lyrics lyrics;
 };
@@ -29,6 +30,14 @@ struct Metadata {
 enum class LegacyEncoding { UTF8ThenGBK, Latin1 };
 Metadata ReadMetadata(const std::string &path,
                       LegacyEncoding policy = LegacyEncoding::UTF8ThenGBK);
+// A bounded ID3v2 prefix; incomplete/oversized tags are rejected. No audio decode.
+Metadata ReadMetadataBytes(const std::vector<uint8_t>& bytes,
+                          LegacyEncoding policy = LegacyEncoding::UTF8ThenGBK);
+// Exact LRCLIB record verification. Empty/unknown artist, title, album/version
+// mismatch, or a known duration outside +/-2 seconds cannot supply lyrics.
+struct ExactLyrics { std::string text; double duration=0; bool matched=false,instrumental=false; };
+ExactLyrics ParseExactLyrics(const std::string& json, const Track& track);
+std::string ExactLyricsUrl(const std::string& service, const Track& track);
 std::string ResolveUrl(const std::string &base, const std::string &reference);
 std::vector<Track> ParseCatalog(const std::string &text,
                                 const std::string &baseUrl,

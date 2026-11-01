@@ -1,4 +1,6 @@
 #include "media.hpp"
+#include "log.hpp"
+#include "fslock.hpp"
 #include "media_tables.hpp"
 #include "yyjson.h"
 #include <algorithm>
@@ -37,7 +39,7 @@ FILE *openFile(const std::string &p, const char *mode) {
   };
   return _wfopen(wide(p).c_str(), wide(mode).c_str());
 #else
-  return fopen(p.c_str(), mode);
+  return papa::OpenLocked(p.c_str(), mode);
 #endif
 }
 int removeFile(const std::string &p) {
@@ -47,7 +49,7 @@ int removeFile(const std::string &p) {
   MultiByteToWideChar(CP_UTF8, 0, p.c_str(), -1, &w[0], n);
   return (DeleteFileW(w.c_str()) ? 0 : -1);
 #else
-  return remove(p.c_str());
+  return papa::RemoveLocked(p.c_str());
 #endif
 }
 int renameFile(const std::string &a, const std::string &b) {
@@ -60,7 +62,7 @@ int renameFile(const std::string &a, const std::string &b) {
   };
   return (MoveFileW(w(a).c_str(), w(b).c_str()) ? 0 : -1);
 #else
-  return rename(a.c_str(), b.c_str());
+  return papa::RenameLocked(a.c_str(), b.c_str());
 #endif
 }
 bool readFile(const std::string &p, std::string &out, size_t cap = JsonLimit) {
@@ -71,23 +73,28 @@ bool readFile(const std::string &p, std::string &out, size_t cap = JsonLimit) {
   char b[8192];
   while (size_t n = fread(b, 1, sizeof b, f)) {
     if (out.size() + n > cap) {
-      fclose(f);
+      papa::CloseLocked(f);
       out.clear();
       return false;
     }
     out.append(b, n);
   }
   bool ok = !ferror(f);
-  fclose(f);
+  papa::CloseLocked(f);
   return ok;
 }
 bool writeFile(const std::string &p, const std::string &s) {
   FILE *f = openFile(p, "wb");
-  if (!f)
+  if (!f) {
+    Logf("writeFile 打开失败：%s", p.c_str());
     return false;
+  }
   bool ok = fwrite(s.data(), 1, s.size(), f) == s.size();
   ok = (fflush(f) == 0) && ok;
-  return fclose(f) == 0 && ok;
+  int closed = papa::CloseLocked(f);
+  if (closed != 0 || !ok)
+    Logf("writeFile 写入失败：%s（%zu 字节）", p.c_str(), s.size());
+  return closed == 0 && ok;
 }
 void utf8(std::string &o, uint32_t c) {
   if (c > 0x10ffff || (c >= 0xd800 && c <= 0xdfff))
@@ -175,7 +182,8 @@ std::string trim(std::string s) {
     ++n;
   return s.substr(n);
 }
-std::string decode(const std::string &s, unsigned enc) {
+std::string decode(const std::string &s, unsigned enc, LegacyEncoding policy = LegacyEncoding::Latin1) {
+  if (enc == 0 && policy == LegacyEncoding::UTF8ThenGBK) return legacy(s);
   if (enc == 0) {
     std::string out;
     for (unsigned char c : s)
@@ -660,19 +668,18 @@ Lyrics ParseLyrics(const std::string &raw) {
     l.plain.clear();
   return l;
 }
-Metadata ReadMetadata(const std::string &path, LegacyEncoding policy) {
+Metadata ReadMetadataBytes(const std::vector<uint8_t>& bytes, LegacyEncoding policy) {
   Metadata m;
-  FILE *f = openFile(path, "rb");
-  if (!f)
-    return m;
-  unsigned char h[10];
-  size_t got = fread(h, 1, 10, f);
-  if (got == 10 && memcmp(h, "ID3", 3) == 0 && (h[3] == 3 || h[3] == 4)) {
+  if (bytes.size() < 10) return m;
+  const auto* h = bytes.data();
+  size_t got = bytes.size();
+  if (got >= 10 && memcmp(h, "ID3", 3) == 0 && (h[3] == 3 || h[3] == 4)) {
     uint32_t n;
     unsigned version = h[3], flags = h[5];
     if (syncSize(h + 6, n) && n <= TagLimit && !(flags & 0x0f)) {
-      std::string data(n, 0);
-      if (fread(&data[0], 1, n, f) == n) {
+      if (n > bytes.size()-10) return m;
+      std::string data(bytes.begin()+10, bytes.begin()+10+n);
+      {
         if (version == 3 && (flags & 128))
           data = unsync(data);
         size_t at = 0;
@@ -731,7 +738,7 @@ Metadata ReadMetadata(const std::string &path, LegacyEncoding policy) {
             continue;
           unsigned enc = (unsigned char)b[0];
           if (id[0] == 'T' && b.size() <= TextLimit && id != "TXXX") {
-            std::string t = trim(decode(b.substr(1), enc));
+            std::string t = trim(decode(b.substr(1), enc, policy));
             auto zero = t.find('\0');
             if (zero != std::string::npos)
               t.resize(zero);
@@ -745,6 +752,10 @@ Metadata ReadMetadata(const std::string &path, LegacyEncoding policy) {
               m.albumArtist = t;
             else if (id == "TYER" || id == "TDRC")
               m.year = t;
+            else if (id == "TLEN") {
+              char* end=nullptr; double ms=std::strtod(t.c_str(), &end);
+              if (end!=t.c_str() && !*end && std::isfinite(ms) && ms>0 && ms<=86400000) m.duration=ms/1000.;
+            }
             else if (id == "TRCK")
               m.track = std::max(0, atoi(t.c_str()));
             else if (id == "TPOS")
@@ -765,7 +776,7 @@ Metadata ReadMetadata(const std::string &path, LegacyEncoding policy) {
             }
           } else if (id == "USLT" && b.size() <= TextLimit && b.size() >= 4) {
             size_t start = terminated(b, 4, enc);
-            m.rawLyrics = decode(b.substr(start), enc);
+            m.rawLyrics = decode(b.substr(start), enc, policy);
           } else if (id == "SYLT" && b.size() <= TextLimit && b.size() >= 6 &&
                      (unsigned char)b[4] == 2) {
             size_t start = terminated(b, 6, enc);
@@ -776,7 +787,7 @@ Metadata ReadMetadata(const std::string &path, LegacyEncoding policy) {
               if (end + 4 > b.size() || end < start + step)
                 break;
               std::string line =
-                  decode(b.substr(start, end - start - step), enc);
+                  decode(b.substr(start, end - start - step), enc, policy);
               double sec = be((const unsigned char *)b.data() + end) / 1000.;
               timed.lines.push_back({sec, line});
               start = end + 4;
@@ -791,6 +802,20 @@ Metadata ReadMetadata(const std::string &path, LegacyEncoding policy) {
           }
         }
       }
+    }
+  }
+  if (m.lyrics.lines.empty()) m.lyrics=ParseLyrics(m.rawLyrics);
+  return m;
+}
+Metadata ReadMetadata(const std::string &path, LegacyEncoding policy) {
+  Metadata m;
+  FILE* f=openFile(path,"rb"); if(!f) return m;
+  unsigned char h[10];
+  if(fread(h,1,10,f)==10 && !memcmp(h,"ID3",3)) {
+    uint32_t n=0;
+    if(syncSize(h+6,n) && n<=TagLimit) {
+      std::vector<uint8_t> bytes(h,h+10); bytes.resize(10+n);
+      if(fread(bytes.data()+10,1,n,f)==n) m=ReadMetadataBytes(bytes,policy);
     }
   }
   if (fseek(f, -128, SEEK_END) == 0) {
@@ -814,10 +839,41 @@ Metadata ReadMetadata(const std::string &path, LegacyEncoding policy) {
         m.track = (unsigned char)v[126];
     }
   }
-  fclose(f);
-  if (m.lyrics.lines.empty())
-    m.lyrics = ParseLyrics(m.rawLyrics);
+  papa::CloseLocked(f);
   return m;
+}
+namespace {
+std::string identity(std::string s) {
+ s=trim(s);for(char& c:s)if(static_cast<unsigned char>(c)<128)c=char(std::tolower(static_cast<unsigned char>(c)));return s;
+}
+bool known(const std::string& s){return !trim(s).empty()&&s!="未知歌手"&&s!="未知专辑";}
+std::string queryEncode(const std::string& s){
+ const char* hex="0123456789ABCDEF";std::string out;
+ for(unsigned char c:s){if((c>='a'&&c<='z')||(c>='A'&&c<='Z')||(c>='0'&&c<='9')||c=='-'||c=='_'||c=='.'||c=='~')out+=char(c);else{out+='%';out+=hex[c>>4];out+=hex[c&15];}}return out;
+}
+}
+ExactLyrics ParseExactLyrics(const std::string& text,const Track& track) {
+ ExactLyrics out;
+ if(text.size()>2*TextLimit+65536||!known(track.title)||!known(track.artist))return out;
+ auto doc=json(text);if(!doc)return out;auto root=yyjson_doc_get_root(doc.get());
+ if(!yyjson_is_obj(root)||identity(str(root,"trackName"))!=identity(track.title)||identity(str(root,"artistName"))!=identity(track.artist))return out;
+ if(known(track.album)&&identity(str(root,"albumName"))!=identity(track.album))return out;
+ auto duration=yyjson_obj_get(root,"duration");out.duration=num(root,"duration");
+ if(!yyjson_is_num(duration)||!std::isfinite(out.duration)||out.duration<=0||out.duration>86400||(track.duration>0&&std::abs(out.duration-track.duration)>2))return ExactLyrics{};
+ out.matched=true;out.instrumental=yyjson_is_true(yyjson_obj_get(root,"instrumental"));
+ if(out.instrumental)return out;
+ auto sync=str(root,"syncedLyrics");auto plain=str(root,"plainLyrics");
+ if(sync.size()<=TextLimit&&!ParseLyrics(sync).lines.empty())out.text=std::move(sync);
+ else if(plain.size()<=TextLimit&&!ParseLyrics(plain).plain.empty())out.text=std::move(plain);
+ return out;
+}
+std::string ExactLyricsUrl(const std::string& service,const Track& track) {
+ if(!http(service)||!known(track.title)||!known(track.artist))return {};
+ std::string base=service;while(!base.empty()&&base.back()=='/')base.pop_back();
+ auto url=base+"/api/get?track_name="+queryEncode(track.title)+"&artist_name="+queryEncode(track.artist);
+ if(known(track.album))url+="&album_name="+queryEncode(track.album);
+ if(std::isfinite(track.duration)&&track.duration>0)url+="&duration="+number(track.duration);
+ return url;
 }
 std::string ResolveUrl(const std::string &base, const std::string &ref) {
   std::string r = trim(ref);
@@ -897,23 +953,39 @@ std::vector<Track> ParseCatalog(const std::string &raw, const std::string &base,
   if (source.empty() || source.size() > 1024)
     return fail("invalid source ID");
   std::set<std::string> ids;
+  auto supportedPath = [](std::string path) {
+    path.resize(path.find_first_of("?#") == std::string::npos ? path.size() : path.find_first_of("?#"));
+    std::transform(path.begin(), path.end(), path.begin(), [](unsigned char c) { return std::tolower(c); });
+    auto dot=path.find_last_of('.');
+    auto ext=dot==std::string::npos?std::string{}:path.substr(dot);
+    return ext!=".flac" && ext!=".wav" && ext!=".aac" && ext!=".m4a" && ext!=".ogg" && ext!=".opus" && ext!=".wma" && ext!=".ape";
+  };
   if (text[0] == '{') {
     auto d = json(text);
     if (!d)
       return fail("invalid JSON");
     auto r = yyjson_doc_get_root(d.get());
     auto arr = yyjson_obj_get(r, "tracks");
-    if (!validVersion(r) || !yyjson_is_arr(arr) ||
+    bool external = !yyjson_obj_get(r,"version") && yyjson_is_str(yyjson_obj_get(r,"name")) && yyjson_is_str(yyjson_obj_get(r,"base"));
+    if ((!validVersion(r) && !external) || !yyjson_is_arr(arr) ||
         yyjson_arr_size(arr) > CountLimit)
       return fail("unsupported catalog schema or size");
+    std::string catalogBase=base;
+    if(external && !str(r,"base").empty()) { catalogBase=ResolveUrl(base,str(r,"base")); if(!http(catalogBase)) return fail("invalid catalog base"); if(catalogBase.back()!='/') catalogBase+='/'; }
     size_t i, n;
     yyjson_val *v;
     yyjson_arr_foreach(arr, i, n, v) {
+      if (yyjson_is_false(yyjson_obj_get(v, "switchPlayable"))) continue;
+      auto format=str(v,"format");
+      std::transform(format.begin(),format.end(),format.begin(),[](unsigned char c){return std::tolower(c);});
+      if (!format.empty() && format!="mp3") continue;
       Track t;
       t.source = SourceKind::Cloud;
       t.sourceId = source;
-      auto audio = str(v, "audio");
-      t.path = ResolveUrl(base, audio);
+      auto audio = str(v, external ? "url" : "audio");
+      t.path = ResolveUrl(catalogBase, audio);
+      if (!supportedPath(t.path)) continue;
+      auto size=yyjson_obj_get(v,"size"); if(yyjson_is_uint(size)) t.fileSize=yyjson_get_uint(size);
       if (!http(t.path) || audio.empty())
         return fail("audio URL must use HTTP(S)");
       auto id = str(v, "id");
@@ -922,12 +994,15 @@ std::vector<Track> ParseCatalog(const std::string &raw, const std::string &base,
         return fail("duplicate track ID");
       t.title = str(v, "title");
       t.artist = str(v, "artist");
+      t.albumArtist = str(v, "albumArtist");
+      t.trackNumber = integer(v,"trackNumber");
+      t.discNumber = integer(v,"discNumber");
       t.album = str(v, "album");
       if (t.album.empty())
         t.album = "未知专辑";
       t.duration = std::max(0., num(v, "duration"));
-      t.cover = ResolveUrl(base, str(v, "cover"));
-      t.lyrics = ResolveUrl(base, str(v, "lyrics"));
+      t.cover = ResolveUrl(catalogBase, str(v, "cover"));
+      t.lyrics = ResolveUrl(catalogBase, str(v, "lyrics"));
       if (t.title.empty())
         t.title = audio.substr(audio.find_last_of('/') + 1);
       out.push_back(t);
@@ -938,7 +1013,7 @@ std::vector<Track> ParseCatalog(const std::string &raw, const std::string &base,
     return fail("HLS is unsupported");
   bool recognizable = text.compare(0, 7, "#EXTM3U") == 0;
   std::istringstream lines(legacy(text));
-  std::string line, title, artist;
+  std::string line, title, artist, album, cover;
   double duration = 0;
   Track imported;
   bool hasImported = false;
@@ -957,9 +1032,12 @@ std::vector<Track> ParseCatalog(const std::string &raw, const std::string &base,
     }
     if (line.compare(0, 8, "#EXTINF:") == 0) {
       auto comma = line.find(',');
+      auto logo=line.find("tvg-logo=\"");
+      cover.clear(); if(logo!=std::string::npos) {logo+=10;auto end=line.find('"',logo);if(end!=std::string::npos)cover=ResolveUrl(base,line.substr(logo,end-logo));}
       if (comma != std::string::npos) {
         std::string value = trim(line.substr(8, comma - 8));
         char *end = nullptr;
+        auto space=value.find_first_of(" \t");if(space!=std::string::npos)value.resize(space);
         double parsed = strtod(value.c_str(), &end);
         duration = end != value.c_str() && *end == 0 && std::isfinite(parsed) &&
                            parsed > 0
@@ -976,6 +1054,7 @@ std::vector<Track> ParseCatalog(const std::string &raw, const std::string &base,
       recognizable = true;
       continue;
     }
+    if (line.compare(0,8,"#EXTGRP:")==0) { album=trim(line.substr(8)); continue; }
     if (line[0] == '#')
       continue;
     if (out.size() >= CountLimit)
@@ -991,15 +1070,20 @@ std::vector<Track> ParseCatalog(const std::string &raw, const std::string &base,
       t.id = "cloud:" + source + ":" + hash(t.path);
       t.sourceId = source;
       t.source = SourceKind::Cloud;
+      auto suffix=" - "+album;
+      if(!album.empty() && title.size()>suffix.size() && title.compare(title.size()-suffix.size(),suffix.size(),suffix)==0)title.resize(title.size()-suffix.size());
       t.title = title.empty() ? line.substr(line.find_last_of('/') + 1) : title;
       t.artist = artist;
+      if(!album.empty())t.album=album;
+      t.cover=cover;
       t.duration = duration;
     }
     hasImported =
         false; // Marker identity belongs only to its immediately following URI.
-    out.push_back(t);
+    if (supportedPath(t.path)) out.push_back(t);
     title.clear();
     artist.clear();
+    album.clear();cover.clear();
     duration = 0;
     recognizable = true;
   }
@@ -1025,7 +1109,7 @@ void EnrichTrack(Track &t, const std::string &cache) {
     n = fread(b, 1, sizeof b, f);
     sample.append(b, n);
   }
-  fclose(f);
+  papa::CloseLocked(f);
   sample += ":" + std::to_string(size);
   if (t.id.empty())
     t.id = "sd:" + hash(sample);
@@ -1037,6 +1121,7 @@ void EnrichTrack(Track &t, const std::string &cache) {
     t.artist = m.artist;
   if (!m.album.empty())
     t.album = m.album;
+  if(!t.duration && m.duration>0)t.duration=m.duration;
   t.albumArtist = m.albumArtist;
   t.trackNumber = m.track;
   t.discNumber = m.disc;
@@ -1059,7 +1144,7 @@ void EnrichTrack(Track &t, const std::string &cache) {
          {"cover.jpg", "folder.jpg", "cover.png", "folder.png"}) {
       FILE *c = openFile(dir + name, "rb");
       if (c) {
-        fclose(c);
+        papa::CloseLocked(c);
         t.cover = dir + name;
         break;
       }

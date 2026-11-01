@@ -1,0 +1,23 @@
+{
+  "status": "visual concepts only; waiting for selection",
+  "surface": "Nintendo Switch native app, intended1280x720",
+  "skill": "https://github.com/elayadesign/ai-design-skills/blob/main/skills/landing-page-design/SKILL.md",
+  "skill_sha256": "203569792660ab6d71dcb2e4fa673c0c7a0df7c99801d04ab419a4cb08aceb2c",
+  "reference": "build/diagnostics/ui-0.4.0/player-cover.png",
+  "constraints": [
+    "three main entries 曲库/播放/设置",
+    "album covers and synchronized lyrics",
+    "large touch controls and gamepad shortcuts",
+    "one prominent play/pause action",
+    "flat background; consistent type and spacing scale"
+  ],
+  "display_order": [
+    "01-album-liner.png",
+    "02-night-record.png",
+    "03-lyric-theatre.png"
+  ],
+  "original_demo_text": true,
+  "implementation_changed": false,
+  "backup": "/Users/jay/开发/switch-hats-backups/papa-walkman/papa-walkman-0.4.0-20261030-145157.tar.gz",
+  "native_adaptation": "Apply visual hierarchy, type/spacing/state rules; keep native player functionality. Marketing sections, SEO and landing-page tagline-scroll requirements do not describe this product surface."
+}

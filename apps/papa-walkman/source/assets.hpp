@@ -23,7 +23,7 @@ public:
     void RefreshStreams(bool force=true); // scans only the small stream directory, never evicts active streams
     void Enrich(Track& track); // serialized, budgeted derived-art generation and index recording
     CacheUsage Usage()const;
-    uint64_t Limit()const{std::lock_guard<std::mutex>lock(mutex_);return limit_;}
+    uint64_t Limit()const{return limit_.load();}
     void SetLimit(uint64_t value);
     void SetPins(const std::vector<std::string>& paths);
     std::string AssetPath(const std::string& reference) const;
@@ -33,13 +33,19 @@ public:
     void RemoveStartupOrphans();
     std::vector<uint8_t> ReadAsset(const std::string& reference,size_t maximum,
         const std::atomic<uint64_t>*cancel=nullptr,uint64_t expected=0,bool refresh=false);
+    // Atomic bounded writes into managed metadata/assets directories; never holds
+    // the index lock while writing a file. Serializes reservations and promotion.
+    bool Store(const std::string& path,const std::vector<uint8_t>& bytes,const std::vector<std::string>& pinned={},
+        const std::atomic<uint64_t>*cancel=nullptr,uint64_t expected=0);
+    void ResolveCloud(Track& track,const std::atomic<uint64_t>*cancel,uint64_t expected,bool refresh=false);
+    void ResolveLyrics(Track& track,const std::string& service,const std::atomic<uint64_t>*cancel,uint64_t expected,bool refresh=false);
 private:
     struct Indexed {uint64_t bytes=0,modified=0;bool stream=false;};
     bool ManagedPath(const std::string& path)const;
     void RecordLocked(const std::string& path);
     void PublishLocked();
     bool TrimLocked(uint64_t target,const std::set<std::string>&keep);
-    std::string root_;uint64_t limit_;mutable std::mutex mutex_,usageMutex_;
+    std::string root_;std::atomic<uint64_t> limit_;mutable std::mutex mutex_,usageMutex_;
     std::mutex warmMutex_,writeMutex_,streamMutex_;
     std::chrono::steady_clock::time_point streamRefresh_{};
     std::set<std::string>pins_,changed_,streams_;
@@ -48,19 +54,20 @@ private:
     CacheUsage usage_;
 };
 struct ArtworkSnapshot {
-    std::string trackId,note;
+    std::string trackId,trackPath,note;
+    std::shared_ptr<const Track> enrichedTrack;
     bool loading=false;
     std::shared_ptr<CoverImage> cover;
     std::shared_ptr<Lyrics> lyrics;
 };
 class ArtworkLoader {
 public:
-    explicit ArtworkLoader(MediaCache& cache);
+    explicit ArtworkLoader(MediaCache& cache,std::string lyricsService="https://lrclib.net");
     ~ArtworkLoader();
     void Request(const Track& track,bool refresh=false);
     ArtworkSnapshot Snapshot();
 private:
-    void Run();MediaCache&cache_;std::mutex mutex_;std::condition_variable changed_;
+    void Run();MediaCache&cache_;std::string lyricsService_;std::mutex mutex_;std::condition_variable changed_;
     std::atomic<uint64_t>generation_{0};bool running_=true,pending_=false,refresh_=false;
     Track requested_;ArtworkSnapshot snapshot_;std::thread thread_;
 };

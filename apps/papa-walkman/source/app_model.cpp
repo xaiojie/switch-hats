@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <map>
 #include <set>
+#include <cmath>
 namespace papa {
 namespace {
 std::string AlbumKey(const Track&t){return (t.albumArtist.empty()?t.artist:t.albumArtist)+"\n"+t.album;}
@@ -10,6 +11,23 @@ void LibraryModel::SetTracks(SourceKind kind,std::vector<Track> tracks){
     std::vector<Track>clean;std::set<std::string>ids;
     for(auto&t:tracks){t.source=kind;if(t.id.empty())t.id=(kind==SourceKind::SD?"sd:":"cloud:")+t.path;if(ids.insert(t.id).second)clean.push_back(std::move(t));}
     (kind==SourceKind::SD?local_:cloud_)=std::move(clean);
+}
+bool LibraryModel::UpdateTrackMetadata(const Track& incoming){
+    if(incoming.id.empty()||incoming.path.empty())return false;
+    bool changed=false;
+    auto patch=[&](Track&t){
+        if(t.id!=incoming.id||t.path!=incoming.path)return;
+        auto field=[&](std::string&out,const std::string&value){if(!value.empty()&&out!=value){out=value;changed=true;}};
+        field(t.title,incoming.title);field(t.artist,incoming.artist);
+        if(incoming.album!="未知专辑")field(t.album,incoming.album);
+        field(t.albumArtist,incoming.albumArtist);field(t.cover,incoming.cover);field(t.lyrics,incoming.lyrics);
+        if(incoming.trackNumber>0&&t.trackNumber!=incoming.trackNumber){t.trackNumber=incoming.trackNumber;changed=true;}
+        if(incoming.discNumber>0&&t.discNumber!=incoming.discNumber){t.discNumber=incoming.discNumber;changed=true;}
+        if(std::isfinite(incoming.duration)&&incoming.duration>0&&t.duration!=incoming.duration){t.duration=incoming.duration;changed=true;}
+    };
+    for(auto*list:{&local_,&cloud_,&queued_})for(auto&t:*list)patch(t);
+    for(auto&playlist:user.playlists)for(auto&t:playlist.tracks)patch(t);
+    patch(user.resume.track);return changed;
 }
 std::vector<Track>LibraryModel::Base()const{
     if(source==LibrarySource::SD)return local_;

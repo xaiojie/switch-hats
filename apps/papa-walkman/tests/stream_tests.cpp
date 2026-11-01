@@ -1,10 +1,12 @@
 #include "stream.hpp"
+#include "assets.hpp"
 #include "decoder.hpp"
 #include "engine.hpp"
 #include <chrono>
 #include <cstdio>
 #include <thread>
 #include <vector>
+#include <filesystem>
 #ifdef _WIN32
 #define NOMINMAX
 #include <windows.h>
@@ -20,6 +22,23 @@ struct Sink:AudioSink {
 };
 int review(const std::string& base,const std::string& mode){
  unsigned char b[8192];
+ if(mode=="prefetch") {
+  StreamOptions options;options.cacheBytes=32768;options.prefetchBytes=16384;ByteSource source;
+  CHECK(source.Open(base+"/tone",nullptr,0,{},options));
+  for(int i=0;i<1000&&source.Status().cachedEnd<options.prefetchBytes;++i)std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  CHECK(source.Status().cachedEnd==options.prefetchBytes);CHECK(source.Read(b,128)==128);
+  std::this_thread::sleep_for(std::chrono::milliseconds(30));
+  CHECK(source.Status().cachedEnd<=options.prefetchBytes+128);
+ }
+ if(mode=="shutdown") {
+  const std::string directory="build-host/stream/shutdown-cache";
+  std::filesystem::create_directories(directory);StreamOptions options;options.cacheDirectory=directory;
+  auto token=std::make_unique<std::atomic<uint64_t>>(1);ByteSource source;
+  CHECK(source.Open(base+"/stalled",token.get(),1,{},options));
+  std::this_thread::sleep_for(std::chrono::milliseconds(150));source.Close();token.reset();
+  ShutdownHttpWorkers();CHECK(std::filesystem::is_empty(directory));
+  CHECK(FetchUrl(base+"/tone",100000).error.empty());ShutdownHttpWorkers();
+ }
  if(mode=="long") {Decoder d;CHECK(d.Open("build-host/stream/long.mp3"));CHECK(d.Duration()>60);size_t frames=0,n;std::vector<int16_t> pcm(4096);while((n=d.Read(pcm.data(),2048)))frames+=n;Decoder one;CHECK(one.Open("tests/tone.mp3"));size_t expected=0;while((n=one.Read(pcm.data(),2048)))expected+=n;CHECK(frames==expected*32);}
  if(mode=="fragment") {Decoder d;auto status=std::make_shared<StreamStatus>();CHECK(d.Open(base+"/fragment",nullptr,0,status));std::vector<int16_t> pcm(4096);CHECK(d.Read(pcm.data(),2048)==2048);CHECK(!status->Snapshot().eof);size_t frames=2048,n;while((n=d.Read(pcm.data(),2048)))frames+=n;Decoder local;CHECK(local.Open("build-host/stream/long.mp3"));size_t expected=0;while((n=local.Read(pcm.data(),2048)))expected+=n;CHECK(frames==expected);CHECK(d.Error().empty());}
  if(mode=="late") {Sink sink;Engine e(sink);CHECK(e.Open(base+"/late"));CHECK(e.State().durationKnown);for(int i=0;i<2000&&!e.State().ended&&e.State().error.empty();++i)e.Tick();CHECK(!e.State().error.empty());CHECK(!e.State().ended);CHECK(e.State().completion==0);}
@@ -55,6 +74,39 @@ int main(int argc,char**argv){
  CHECK(argc==2);
  {FILE* f=OpenUtf8File(u8"build-host/stream/中文文件.tmp","w+b");CHECK(f);std::fputs("hello",f);std::fclose(f);ByteSource local;CHECK(local.Open(u8"build-host/stream/中文文件.tmp"));char c[5];CHECK(local.Read(c,5)==5);CHECK(c[0]=='h');}
  std::string base=argv[1];
+ auto prefix=FetchPrefix(base+"/tone",16); CHECK(prefix.error.empty() && prefix.bytes.size()==16);
+ auto ignoredPrefix=FetchPrefix(base+"/ignored",16);CHECK(ignoredPrefix.error.empty()&&ignoredPrefix.bytes==prefix.bytes);
+ auto prefixTruncated=FetchPrefix(base+"/prefix-truncated",65536);CHECK(!prefixTruncated.error.empty()&&prefixTruncated.bytes.empty());
+ auto prefixRedirect=FetchPrefix(base+"/redirect",16);CHECK(prefixRedirect.error.empty()&&prefixRedirect.bytes==prefix.bytes&&prefixRedirect.finalUrl==base+"/tone");
+ auto prefixBad=FetchPrefix(base+"/bad-range",16);CHECK(!prefixBad.error.empty());
+ auto prefixStart=std::chrono::steady_clock::now();auto timed=FetchPrefix(base+"/stalled",16,nullptr,0,150);CHECK(!timed.error.empty());CHECK(std::chrono::steady_clock::now()-prefixStart<std::chrono::seconds(2));
+ std::atomic<uint64_t>prefixToken{1};FetchResult prefixCancelled;std::thread prefixWorker([&]{prefixCancelled=FetchPrefix(base+"/stalled",16,&prefixToken,1);});std::this_thread::sleep_for(std::chrono::milliseconds(100));prefixToken=2;prefixWorker.join();CHECK(prefixCancelled.cancelled&&prefixCancelled.bytes.empty());
+ // Only the requested current cloud track triggers prefix enrichment and exact lyrics lookup.
+ MediaCache cloudCache("build-host/stream/cloud-cache");cloudCache.Warm();cloudCache.ClearIdle();
+ Track cloud;cloud.id="cloud:fixture:song";cloud.source=SourceKind::Cloud;cloud.path=base+"/metadata";cloud.title="Test song";
+ auto waitArtwork=[](ArtworkLoader& loader){ArtworkSnapshot result;for(int i=0;i<2000;++i){result=loader.Snapshot();if(!result.loading)break;std::this_thread::sleep_for(std::chrono::milliseconds(5));}return result;};
+ // Artwork must be usable while a slow fallback lyric request is still active.
+ {MediaCache progressive("build-host/stream/progressive-cache");progressive.Warm();progressive.ClearIdle();
+  ArtworkLoader loader(progressive,base+"/lyrics-slow");loader.Request(cloud);bool published=false;
+  for(int i=0;i<500;++i){auto snapshot=loader.Snapshot();if(snapshot.cover&&snapshot.loading){published=true;break;}if(!snapshot.loading)break;std::this_thread::sleep_for(std::chrono::milliseconds(2));}
+  CHECK(published);CHECK(waitArtwork(loader).lyrics);}
+ // A complete catalog needs no extra audio prefix probe, even on refresh.
+ {Track complete=cloud;complete.artist="Test artist";complete.album="Test album";complete.duration=123;
+  complete.cover="build-host/assets-fixtures/cover.png";complete.lyrics="build-host/assets-fixtures/lyrics.lrc";
+  auto before=FetchUrl(base+"/metadata-count",100);cloudCache.ResolveCloud(complete,nullptr,0,true);
+  auto after=FetchUrl(base+"/metadata-count",100);CHECK(before.bytes==after.bytes);}
+ {ArtworkLoader loader(cloudCache,base+"/lyrics");loader.Request(cloud);auto result=waitArtwork(loader);
+ CHECK(!result.loading && result.enrichedTrack && result.enrichedTrack->artist=="Test artist" && result.enrichedTrack->album=="Test album" && result.enrichedTrack->duration==123);
+ CHECK(result.cover && result.lyrics && result.lyrics->lines.size()==1 && result.trackPath==cloud.path);
+ auto before=FetchUrl(base+"/metadata-count",100);loader.Request(cloud);auto cached=waitArtwork(loader);CHECK(cached.cover&&cached.lyrics);
+ auto after=FetchUrl(base+"/metadata-count",100);CHECK(before.bytes==after.bytes);
+ // Explicit references survive metadata fill; stale requests never publish an old identity.
+ Track newer=cloud;newer.id="new";newer.path=base+"/metadata-uslt";newer.artist="Explicit artist";newer.cover="/missing-explicit-cover";
+ loader.Request(cloud,true);loader.Request(newer);auto replaced=waitArtwork(loader);CHECK(replaced.trackId=="new"&&replaced.trackPath==newer.path&&replaced.enrichedTrack->artist=="Explicit artist"&&replaced.enrichedTrack->cover=="/missing-explicit-cover");CHECK(replaced.lyrics&&replaced.lyrics->lines.size()==1);
+ }
+ // A successful response for the wrong song is never displayed and is negatively cached.
+ MediaCache wrongCache("build-host/stream/wrong-cache");wrongCache.Warm();wrongCache.ClearIdle();
+ {ArtworkLoader loader(wrongCache,base+"/lyrics-wrong");loader.Request(cloud);auto wrong=waitArtwork(loader);CHECK(!wrong.lyrics);auto before=FetchUrl(base+"/lyrics-count",100);loader.Request(cloud);auto second=waitArtwork(loader);CHECK(!second.lyrics);auto after=FetchUrl(base+"/lyrics-count",100);CHECK(before.bytes==after.bytes);}
  auto missing=FetchUrl(base+"/missing",100); CHECK(!missing.error.empty());
  auto large=FetchUrl(base+"/tone",16); CHECK(!large.error.empty());
  auto redir=FetchUrl(base+"/redirect",100000); CHECK(redir.error.empty());CHECK(redir.finalUrl==base+"/tone");

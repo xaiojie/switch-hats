@@ -32,15 +32,21 @@ public:
            std::shared_ptr<StreamStatus> status={},StreamOptions options={});
  // Single consumer. Read blocks through temporary starvation; zero means terminal status.
  // Keep the cancellation atomic alive until Close returns; no concurrent consumer calls.
- // Close retires all worker access to that atomic before detaching; the request owns its cache until cleanup finishes.
+ // Close retires all worker access to that atomic; owned workers retain the request until cleanup finishes.
  // Finish consumes trailing transport bytes and verifies completion; it remains cancellable.
  bool Finish();
  void Close();size_t Read(void*,size_t);bool Seek(uint64_t);
  StreamSnapshot Status() const;bool IsRemote() const;
 private:struct Impl;std::unique_ptr<Impl> p_;
 };
-struct FetchResult {std::vector<uint8_t> bytes;std::string finalUrl,error;bool cancelled=false;};
-FetchResult FetchUrl(const std::string&,size_t maximumBytes,const std::atomic<uint64_t>* cancel=nullptr,uint64_t expected=0);
+struct FetchResult {std::vector<uint8_t> bytes;std::string finalUrl,error;bool cancelled=false;long httpCode=0;uint64_t totalBytes=0;};
+FetchResult FetchUrl(const std::string&,size_t maximumBytes,const std::atomic<uint64_t>* cancel=nullptr,uint64_t expected=0, long timeoutMilliseconds=8000);
+// HTTP bytes=0-(maximum-1). Returning exactly the requested prefix is success,
+// including servers ignoring Range (200). Short/truncated 206 is an error.
+// Synchronous ownership: cancellation token need only outlive this call.
+FetchResult FetchPrefix(const std::string&,size_t maximumBytes,const std::atomic<uint64_t>* cancel=nullptr,uint64_t expected=0,long timeoutMilliseconds=8000);
+// After all consumers close, join HTTP workers before shutting down sockets/SD.
+void ShutdownHttpWorkers();
 // UTF-8 paths on Windows, normal libc paths on Switch.
 FILE* OpenUtf8File(const std::string&,const char* mode);
 }

@@ -1,4 +1,5 @@
 #include "core.hpp"
+#include "fslock.hpp"
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -37,21 +38,21 @@ FILE* OpenPath(const std::string& path,const char* mode) {
     auto p=WidePath(path);std::wstring m;while(*mode)m.push_back(static_cast<wchar_t>(*mode++));
     return p.empty()?nullptr:_wfopen(p.c_str(),m.c_str());
 #else
-    return std::fopen(path.c_str(),mode);
+    return papa::OpenLocked(path.c_str(),mode);
 #endif
 }
 int RemovePath(const std::string& path) {
 #ifdef _WIN32
     return DeleteFileW(WidePath(path).c_str())?0:-1;
 #else
-    return std::remove(path.c_str());
+    return papa::RemoveLocked(path.c_str());
 #endif
 }
 int RenamePath(const std::string& from,const std::string& to) {
 #ifdef _WIN32
     return MoveFileW(WidePath(from).c_str(),WidePath(to).c_str())?0:-1;
 #else
-    return std::rename(from.c_str(),to.c_str());
+    return papa::RenameLocked(from.c_str(),to.c_str());
 #endif
 }
 }
@@ -64,6 +65,20 @@ const char* ModeName(Mode mode) {
     }
     return "列表循环";
 }
+Theme NormalizeTheme(int value) {
+    return value>=0 && value<=2 ? static_cast<Theme>(value) : Theme::AlbumLiner;
+}
+Theme NextTheme(Theme value) {
+    return NormalizeTheme((static_cast<int>(NormalizeTheme(static_cast<int>(value)))+1)%3);
+}
+const char* ThemeName(Theme value) {
+    switch(NormalizeTheme(static_cast<int>(value))) {
+        case Theme::AlbumLiner: return "唱片内页";
+        case Theme::NightRecord: return "夜航唱片";
+        case Theme::LyricTheatre: return "歌词剧场";
+    }
+    return "唱片内页";
+}
 Settings LoadSettings(const std::string& path) {
     Settings result;
     FILE* file=OpenPath(path,"rb");
@@ -74,15 +89,16 @@ Settings LoadSettings(const std::string& path) {
         int value;
         if (std::sscanf(line,"volume=%d",&value)==1) result.volume=std::max(0,std::min(100,value));
         else if (std::sscanf(line,"mode=%d",&value)==1 && value>=0 && value<=3) result.mode=static_cast<Mode>(value);
+        else if (std::sscanf(line,"theme=%d",&value)==1) result.theme=NormalizeTheme(value);
     }
-    std::fclose(file);
+    papa::CloseLocked(file);
     return result;
 }
 bool SaveSettings(const std::string& path, Settings value) {
     std::string temp=path+".tmp";
     FILE* file=OpenPath(temp,"wb"); if(!file) return false;
-    bool ok=std::fprintf(file,"volume=%d\nmode=%d\n",std::max(0,std::min(100,value.volume)),static_cast<int>(value.mode))>0;
-    ok=std::fclose(file)==0 && ok;
+    bool ok=std::fprintf(file,"volume=%d\nmode=%d\ntheme=%d\n",std::max(0,std::min(100,value.volume)),static_cast<int>(value.mode),static_cast<int>(NormalizeTheme(static_cast<int>(value.theme))))>0;
+    ok=papa::CloseLocked(file)==0 && ok;
     // Horizon fsdev rename does not replace existing files. Keep a recoverable old copy.
     std::string backup=path+".bak";bool haveOld=false,isRegular=false;
 #ifdef _WIN32

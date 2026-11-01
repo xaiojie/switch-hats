@@ -16,7 +16,11 @@ struct Track {
 };
 enum class Mode { Sequential, LoopAll, RepeatOne, Shuffle };
 const char* ModeName(Mode mode);
-struct Settings { int volume = 70; Mode mode = Mode::LoopAll; };
+enum class Theme { AlbumLiner=0, NightRecord=1, LyricTheatre=2 };
+Theme NormalizeTheme(int value);
+Theme NextTheme(Theme value);
+const char* ThemeName(Theme value);
+struct Settings { int volume = 70; Mode mode = Mode::LoopAll; Theme theme=Theme::AlbumLiner; };
 Settings LoadSettings(const std::string& path);
 bool SaveSettings(const std::string& path, Settings value);
 std::vector<Track> ScanLibrary(const std::string& root, size_t limit = 10000, int depth = 8);

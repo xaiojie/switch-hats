@@ -11,6 +11,8 @@ public:
     Grouping grouping=Grouping::Songs;
     std::string query,groupKey;
     void SetTracks(SourceKind kind,std::vector<Track> tracks);
+    // Late asset/tag results may only patch the same stable ID and URL.
+    bool UpdateTrackMetadata(const Track& track);
     std::vector<Track> Visible() const;
     std::vector<LibraryGroup> Groups() const;
     void SelectSource(LibrarySource value);

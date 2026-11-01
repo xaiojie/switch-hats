@@ -2,6 +2,7 @@
 #define NOMINMAX
 #endif
 #include "stream.hpp"
+#include "fslock.hpp"
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
@@ -12,6 +13,9 @@
 #include <limits>
 #include <thread>
 #include <curl/curl.h>
+#ifdef __SWITCH__
+#include <switch.h>
+#endif
 #ifdef _WIN32
 #include <windows.h>
 #endif
@@ -22,14 +26,14 @@ FILE* OpenUtf8File(const std::string& path,const char* mode){
  std::wstring w(n,0);MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,path.c_str(),-1,&w[0],n);
  std::wstring m;for(;*mode;++mode)m+=wchar_t(*mode);return _wfopen(w.c_str(),m.c_str());
 #else
- return std::fopen(path.c_str(),mode);
+ return papa::OpenLocked(path.c_str(),mode);
 #endif
 }
 static void removeUtf8File(const std::string& path){
 #ifdef _WIN32
  int n=MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,path.c_str(),-1,nullptr,0);if(!n)return;std::wstring w(n,0);MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,path.c_str(),-1,&w[0],n);_wremove(w.c_str());
 #else
- std::remove(path.c_str());
+ papa::RemoveLocked(path.c_str());
 #endif
 }
 static bool seekFile(FILE* f,uint64_t n){
@@ -46,7 +50,7 @@ struct Request {
  FILE* cache=nullptr;uint64_t pos=0,end=0,start=0,offset=0,body=0,length=0,rangeStart=0,rangeEnd=0,rangeTotal=0,previousTotal=0;
  bool done=false,headers=false,hasLength=false,hasRange=false;long code=0;
  std::string url,etag,previousEtag,cachePath;CURL* easy=nullptr;
- ~Request(){if(cache)std::fclose(cache);if(!cachePath.empty())removeUtf8File(cachePath);}
+ ~Request(){if(cache)papa::CloseLocked(cache);if(!cachePath.empty())removeUtf8File(cachePath);}
  bool createCache(){
   std::string dir=options.cacheDirectory;
 #ifdef _WIN32
@@ -92,6 +96,7 @@ struct Request {
    if(r.cancelled())return 0;
    size_t n=static_cast<size_t>(std::min<uint64_t>(count-used,r.options.cacheBytes-r.end%r.options.cacheBytes));
    n=std::min(n,r.options.prefetchBytes);
+   n=static_cast<size_t>(std::min<uint64_t>(n,r.pos+r.options.prefetchBytes-r.end));
    if(!seekFile(r.cache,r.end%r.options.cacheBytes)||std::fwrite(data+used,1,n,r.cache)!=n){r.fail("Stream cache write failed; check free space");return 0;}
    r.end+=n;r.body+=n;used+=n;r.start=std::max(r.start,r.end>r.options.cacheBytes?r.end-r.options.cacheBytes:0);
    r.snapshot.downloadedBytes=r.end;r.snapshot.buffering=false;r.publish();r.cv.notify_all();
@@ -120,9 +125,67 @@ struct Request {
   curl_easy_cleanup(c);
  }
 };
+namespace {
+// libnx does not implement pthread_detach (ENOSYS). Keep ownership until each
+// request finishes; retiring a request remains nonblocking for the UI/audio.
+struct HttpWorker {
+ std::shared_ptr<Request> request;
+ std::atomic<bool> finished{false};
+#ifdef __SWITCH__
+ Thread thread{};bool started=false;
+#else
+ std::thread thread;
+#endif
+ explicit HttpWorker(std::shared_ptr<Request> r):request(std::move(r)){}
+ static void Run(void* arg){auto*w=static_cast<HttpWorker*>(arg);w->request->run();w->finished.store(true,std::memory_order_release);}
+ bool Start(){
+#ifdef __SWITCH__
+  Result rc=threadCreate(&thread,Run,this,nullptr,0x60000,0x2C,-2);
+  if(R_FAILED(rc))return false;
+  rc=threadStart(&thread);
+  if(R_FAILED(rc)){threadClose(&thread);return false;}
+  started=true;
+#else
+  thread=std::thread([this]{Run(this);});
+#endif
+  return true;
+ }
+ ~HttpWorker(){
+#ifdef __SWITCH__
+  if(started){threadWaitForExit(&thread);threadClose(&thread);}
+#else
+  if(thread.joinable())thread.join();
+#endif
+ }
+};
+class HttpWorkers {
+ std::mutex mutex_;
+ std::vector<std::unique_ptr<HttpWorker>> workers_;
+public:
+ bool Start(const std::shared_ptr<Request>&request){
+  std::lock_guard<std::mutex>lock(mutex_);
+  workers_.erase(std::remove_if(workers_.begin(),workers_.end(),[](const auto&w){return w->finished.load(std::memory_order_acquire);}),workers_.end());
+  auto worker=std::make_unique<HttpWorker>(request);
+  if(!worker->Start())return false;
+  workers_.push_back(std::move(worker));return true;
+ }
+ void Shutdown(){
+  std::lock_guard<std::mutex>lock(mutex_);
+  for(const auto&w:workers_){w->request->RetireCancellation();w->request->cv.notify_all();}
+  workers_.clear(); // joins before releasing requests, files and curl resources
+ }
+ ~HttpWorkers(){Shutdown();}
+};
+HttpWorkers& Workers(){static HttpWorkers workers;return workers;}
+bool StartRequest(const std::shared_ptr<Request>&request){
+ if(Workers().Start(request))return true;
+ std::lock_guard<std::mutex>lock(request->mutex);request->fail("Cannot start HTTP worker; retry track");return false;
+}
+}
+void ShutdownHttpWorkers(){Workers().Shutdown();}
 struct ByteSource::Impl {FILE* file=nullptr;std::shared_ptr<Request> request;std::shared_ptr<StreamStatus> status;StreamSnapshot local;const std::atomic<uint64_t>* cancel=nullptr;uint64_t expected=0;};
 ByteSource::ByteSource():p_(new Impl){}ByteSource::~ByteSource(){Close();}
-void ByteSource::Close(){if(p_->request){{std::lock_guard<std::mutex> lock(p_->request->mutex);p_->request->RetireCancellation();p_->request->cv.notify_all();}p_->request.reset();}if(p_->file)std::fclose(p_->file);p_->file=nullptr;p_->cancel=nullptr;}
+void ByteSource::Close(){if(p_->request){{std::lock_guard<std::mutex> lock(p_->request->mutex);p_->request->RetireCancellation();p_->request->cv.notify_all();}p_->request.reset();}if(p_->file)papa::CloseLocked(p_->file);p_->file=nullptr;p_->cancel=nullptr;}
 bool ByteSource::Open(const std::string& path,const std::atomic<uint64_t>* cancel,uint64_t expected,std::shared_ptr<StreamStatus> status,StreamOptions opts){
  Close();p_->status=status?status:std::make_shared<StreamStatus>();p_->local={};p_->cancel=cancel;p_->expected=expected;p_->status->Update({});
  if(cancel&&cancel->load()!=expected){p_->local.cancelled=true;p_->status->Update(p_->local);return false;}
@@ -130,7 +193,7 @@ bool ByteSource::Open(const std::string& path,const std::atomic<uint64_t>* cance
  auto r=std::make_shared<Request>();r->url=path;r->cancel=cancel;r->expected=expected;r->status=p_->status;r->options=opts;
  r->options.cacheBytes=std::min<uint64_t>(512ull*1024*1024,std::max<uint64_t>(32768,opts.cacheBytes));r->options.prefetchBytes=static_cast<size_t>(std::min<uint64_t>(r->options.cacheBytes/2,std::max<size_t>(16384,opts.prefetchBytes)));
  if(!r->createCache()){p_->local.error="Cannot create stream cache";p_->status->Update(p_->local);return false;}
- r->snapshot.buffering=true;r->publish();p_->request=r;std::thread([r](){r->run();}).detach();return true;
+ r->snapshot.buffering=true;r->publish();p_->request=r;return StartRequest(r);
 }
 size_t ByteSource::Read(void* out,size_t count){
  if(!count)return 0;
@@ -156,7 +219,7 @@ bool ByteSource::Seek(uint64_t offset){
  if(!old->snapshot.rangeSupported)return false;
  auto r=std::make_shared<Request>();r->url=old->url;{std::lock_guard<std::mutex> cancelLock(old->cancelMutex);r->cancel=old->cancel;}r->expected=old->expected;r->status=old->status;r->options=old->options;r->previousEtag=old->etag;r->previousTotal=old->snapshot.totalBytes;
  r->offset=r->pos=r->start=r->end=offset;if(!r->createCache())return false;
- old->RetireCancellation();old->cv.notify_all();r->snapshot.buffering=true;r->publish();p_->request=r;lock.unlock();std::thread([r](){r->run();}).detach();return true;
+ old->RetireCancellation();old->cv.notify_all();r->snapshot.buffering=true;r->publish();p_->request=r;lock.unlock();return StartRequest(r);
 }
 bool ByteSource::Finish(){
  unsigned char bytes[8192];while(Read(bytes,sizeof bytes)){}
@@ -164,12 +227,75 @@ bool ByteSource::Finish(){
 }
 StreamSnapshot ByteSource::Status()const{return p_->status?p_->status->Snapshot():StreamSnapshot{};}
 bool ByteSource::IsRemote()const{return bool(p_->request);}
-FetchResult FetchUrl(const std::string& url,size_t maximum,const std::atomic<uint64_t>* cancel,uint64_t expected){
- FetchResult result;ByteSource source;StreamOptions opts;opts.cacheBytes=std::max<size_t>(32768,std::min<size_t>(maximum,1024*1024));
- if(url.compare(0,7,"http://")&&url.compare(0,8,"https://")){result.error="Expected HTTP/HTTPS URL";return result;}
- if(!source.Open(url,cancel,expected,{},opts)){result.error=source.Status().error;result.cancelled=source.Status().cancelled;return result;}
- uint8_t block[8192];size_t n;
- while((n=source.Read(block,sizeof block))){if(n>maximum-result.bytes.size()){result.error="HTTP asset exceeds size limit";result.finalUrl=source.Status().finalUrl;source.Close();result.bytes.clear();return result;}result.bytes.insert(result.bytes.end(),block,block+n);}
- auto s=source.Status();result.finalUrl=s.finalUrl;result.error=s.error;result.cancelled=s.cancelled;if(result.cancelled)result.error="Request cancelled";if(!result.error.empty())result.bytes.clear();return result;
+namespace {
+struct BoundedFetch {
+ FetchResult result; size_t maximum; bool prefix,complete=false,hasLength=false,hasRange=false,headers=false;
+ uint64_t length=0,start=0,end=0,total=0,body=0;
+ const std::atomic<uint64_t>* cancel;uint64_t expected;
+ bool Cancelled()const{return cancel&&cancel->load()!=expected;}
+ static int Progress(void* p,curl_off_t,curl_off_t,curl_off_t,curl_off_t){return static_cast<BoundedFetch*>(p)->Cancelled()?1:0;}
+ static size_t Header(char* p,size_t a,size_t b,void* context){
+  auto& f=*static_cast<BoundedFetch*>(context);if(a&&b>SIZE_MAX/a)return 0;size_t n=a*b;
+  if(n>8192||f.Cancelled())return 0;
+  std::string line(p,n);
+  if(line.compare(0,5,"HTTP/")==0){auto space=line.find(' ');f.result.httpCode=space==std::string::npos?0:std::strtol(line.c_str()+space+1,nullptr,10);f.hasLength=f.hasRange=f.headers=false;f.length=f.body=0;}
+  auto colon=line.find(':');if(colon!=std::string::npos){auto key=line.substr(0,colon);for(char& c:key)c=char(std::tolower(static_cast<unsigned char>(c)));auto v=line.substr(colon+1);while(!v.empty()&&std::isspace(static_cast<unsigned char>(v.back())))v.pop_back();
+   if(key=="content-length"){char* end=nullptr;f.length=std::strtoull(v.c_str(),&end,10);f.hasLength=end&&end!=v.c_str()&&!*end&&v.find('-')==std::string::npos;}
+   if(key=="content-range"){unsigned long long start=0,end=0,total=0;char extra=0;f.hasRange=std::sscanf(v.c_str()," bytes %llu-%llu/%llu %c",&start,&end,&total,&extra)==3;f.start=start;f.end=end;f.total=total;}
+  }
+  if(line=="\r\n"&&f.result.httpCode>=200&&f.result.httpCode<300){
+   if(f.result.httpCode!=200&&f.result.httpCode!=206){f.result.error="Unsupported HTTP response";return 0;}
+   if(f.result.httpCode==206&&(!f.hasRange||f.start!=0||f.end<f.start||f.end>=f.total||(f.hasLength&&f.length!=f.end+1)||(f.prefix&&f.end+1!=std::min<uint64_t>(f.maximum,f.total))||(!f.prefix&&f.end+1!=f.total))){f.result.error="Invalid HTTP Content-Range";return 0;}
+   f.result.totalBytes=f.result.httpCode==206?f.total:(f.hasLength?f.length:0);f.headers=true;
+  }
+  return n;
+ }
+ static size_t Write(char* p,size_t a,size_t b,void* context){
+  auto& f=*static_cast<BoundedFetch*>(context);if(a&&b>SIZE_MAX/a)return 0;size_t n=a*b;
+  if(f.Cancelled())return 0;
+  if(f.result.httpCode>=300&&f.result.httpCode<400)return n;
+  if(!f.headers)return 0;
+  size_t take=std::min(n,f.maximum-f.result.bytes.size());
+  f.result.bytes.insert(f.result.bytes.end(),p,p+take);f.body+=take;
+  if(f.prefix&&f.result.bytes.size()==f.maximum){f.complete=true;return 0;}
+  if(take<n){f.result.error="HTTP asset exceeds size limit";return 0;}
+  return n;
+ }
+};
+FetchResult FetchBounded(const std::string& url,size_t maximum,const std::atomic<uint64_t>* cancel,uint64_t expected,long timeout,bool prefix){
+ BoundedFetch f{{},maximum,prefix,false,false,false,false,0,0,0,0,0,cancel,expected};
+ if(f.Cancelled()){f.result.cancelled=true;f.result.error="Request cancelled";return f.result;}
+ if(url.compare(0,7,"http://")&&url.compare(0,8,"https://")){f.result.error="Expected HTTP/HTTPS URL";return f.result;}
+ if(!maximum||maximum>32*1024*1024){f.result.error="Invalid HTTP size limit";return f.result;}
+ static const bool initialized=[](){return curl_global_init(CURL_GLOBAL_DEFAULT)==CURLE_OK;}();
+ CURL* c=initialized?curl_easy_init():nullptr;if(!c){f.result.error="HTTP initialization failed";return f.result;}
+ char error[CURL_ERROR_SIZE]={};std::string range="0-"+std::to_string(maximum-1);
+ curl_easy_setopt(c,CURLOPT_URL,url.c_str());if(prefix)curl_easy_setopt(c,CURLOPT_RANGE,range.c_str());
+ curl_easy_setopt(c,CURLOPT_FOLLOWLOCATION,1L);curl_easy_setopt(c,CURLOPT_MAXREDIRS,5L);
+#if LIBCURL_VERSION_NUM >= 0x075500
+ curl_easy_setopt(c,CURLOPT_PROTOCOLS_STR,"http,https");curl_easy_setopt(c,CURLOPT_REDIR_PROTOCOLS_STR,"http,https");
+#else
+ curl_easy_setopt(c,CURLOPT_PROTOCOLS,long(CURLPROTO_HTTP|CURLPROTO_HTTPS));curl_easy_setopt(c,CURLOPT_REDIR_PROTOCOLS,long(CURLPROTO_HTTP|CURLPROTO_HTTPS));
+#endif
+ curl_easy_setopt(c,CURLOPT_SSL_VERIFYPEER,1L);curl_easy_setopt(c,CURLOPT_SSL_VERIFYHOST,2L);
+ curl_easy_setopt(c,CURLOPT_CONNECTTIMEOUT_MS,std::min(3000L,std::max(1L,timeout)));
+ curl_easy_setopt(c,CURLOPT_TIMEOUT_MS,std::min(15000L,std::max(1L,timeout)));
+ curl_easy_setopt(c,CURLOPT_NOSIGNAL,1L);curl_easy_setopt(c,CURLOPT_FAILONERROR,1L);curl_easy_setopt(c,CURLOPT_ERRORBUFFER,error);
+ curl_easy_setopt(c,CURLOPT_USERAGENT,"Papa-Walkman/0.4.0 (https://github.com/xaiojie/switch-hats)");
+ curl_easy_setopt(c,CURLOPT_HEADERFUNCTION,BoundedFetch::Header);curl_easy_setopt(c,CURLOPT_HEADERDATA,&f);
+ curl_easy_setopt(c,CURLOPT_WRITEFUNCTION,BoundedFetch::Write);curl_easy_setopt(c,CURLOPT_WRITEDATA,&f);
+ curl_easy_setopt(c,CURLOPT_XFERINFOFUNCTION,BoundedFetch::Progress);curl_easy_setopt(c,CURLOPT_XFERINFODATA,&f);curl_easy_setopt(c,CURLOPT_NOPROGRESS,0L);
+ auto code=curl_easy_perform(c);char* finalUrl=nullptr;curl_easy_getinfo(c,CURLINFO_EFFECTIVE_URL,&finalUrl);if(finalUrl)f.result.finalUrl=finalUrl;
+ curl_easy_cleanup(c);f.result.cancelled=f.Cancelled();
+ if(f.result.cancelled)f.result.error="Request cancelled";
+ else if(f.result.error.empty()&&!(prefix&&f.complete)){
+  if(code!=CURLE_OK)f.result.error=error[0]?error:curl_easy_strerror(code);
+  else if(!f.headers||(f.hasLength&&f.body!=f.length)||(f.result.httpCode==206&&f.body!=f.end+1))f.result.error="Incomplete HTTP response";
+ }
+ if(!f.result.error.empty())f.result.bytes.clear();
+ return std::move(f.result);
 }
+}
+FetchResult FetchUrl(const std::string& url,size_t maximum,const std::atomic<uint64_t>* cancel,uint64_t expected,long timeout){return FetchBounded(url,maximum,cancel,expected,timeout,false);}
+FetchResult FetchPrefix(const std::string& url,size_t maximum,const std::atomic<uint64_t>* cancel,uint64_t expected,long timeout){return FetchBounded(url,maximum,cancel,expected,timeout,true);}
 }

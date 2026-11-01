@@ -11,6 +11,13 @@ using namespace papa;
 static int checks = 0;
 #define CHECK(expr) do { ++checks; if (!(expr)) { std::fprintf(stderr,"FAIL line %d: %s\n",__LINE__,#expr); return 1; } } while(0)
 int main(int argc, char** argv) {
+    CHECK(NextTheme(Theme::AlbumLiner)==Theme::NightRecord);
+    CHECK(NextTheme(Theme::NightRecord)==Theme::LyricTheatre);
+    CHECK(NextTheme(Theme::LyricTheatre)==Theme::AlbumLiner);
+    CHECK(NormalizeTheme(-1)==Theme::AlbumLiner);
+    CHECK(NormalizeTheme(999)==Theme::AlbumLiner);
+    CHECK(NextTheme(static_cast<Theme>(999))==Theme::NightRecord);
+    CHECK(std::string(ThemeName(Theme::NightRecord))=="夜航唱片");
     Queue q(52); q.Reset(3); CHECK(q.Current() == -1);
     CHECK(q.Next() == 0); CHECK(q.Next() == 1); CHECK(q.Previous() == 0);
     q.Select(2); CHECK(q.Next() == 0);
@@ -59,6 +66,23 @@ int main(int argc, char** argv) {
         CHECK(LoadSettings(conf).mode==Mode::RepeatOne);
         CHECK(SaveSettings(conf,Settings{65,Mode::Sequential}));
         CHECK(LoadSettings(conf).volume==65);
+        CHECK(LoadSettings(conf+".missing").theme==Theme::AlbumLiner);
+        for(auto theme:{Theme::AlbumLiner,Theme::NightRecord,Theme::LyricTheatre}) {
+            CHECK(SaveSettings(conf,Settings{63,Mode::Shuffle,theme}));
+            s=LoadSettings(conf);CHECK(s.theme==theme);CHECK(s.volume==63);CHECK(s.mode==Mode::Shuffle);
+        }
+        std::ofstream(conf)<<"volume=42\nmode=2\n";
+        s=LoadSettings(conf);CHECK(s.theme==Theme::AlbumLiner);CHECK(s.volume==42);
+        for(const char* invalid:{"-1","3","999","garbage"}) {
+            std::ofstream(conf)<<"theme="<<invalid<<"\n";
+            CHECK(LoadSettings(conf).theme==Theme::AlbumLiner);
+        }
+        CHECK(SaveSettings(conf,Settings{55,Mode::RepeatOne,Theme::NightRecord}));
+        std::remove((conf+".bak").c_str());
+        CHECK(std::rename(conf.c_str(),(conf+".bak").c_str())==0);
+        CHECK(LoadSettings(conf).theme==Theme::NightRecord);
+        CHECK(SaveSettings(conf,Settings{55,Mode::RepeatOne,static_cast<Theme>(999)}));
+        CHECK(LoadSettings(conf).theme==Theme::AlbumLiner);
     }
     std::printf("PASS %d checks: queue, shuffle, streaming resampling, library, settings\n",checks);
 }

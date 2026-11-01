@@ -1,0 +1,12 @@
+# Unified pages and lyric motion implementation
+
+Goal: correct page consistency and lyric motion in native 0.5.1.
+Spec: ../specs/2026-10-30-unified-pages-motion-design.md
+Use executing-plans and dispatch independent page and lyric modules, then fresh read-only review.
+
+- [x] Page worker: ui.hpp/ui.cpp/ui_views.inc, tests/ui_tests.cpp and interaction_tests.cpp, tools/preview.cpp. Own full page design/hit geometry plus SettingsSection, settings action helpers; do not touch ui_player.inc or lyric motion files. Insert ui_lyrics.inc once inside Draw before the page branches. View gets lyricPosition=-1 and lyricAnimating=false. Helper contract drawTimedLyrics(Rect viewport,int anchorY,int activeSize,int neighborSize,int rowPitch,int maxLines) for timed lyrics; player owns its calls, expanded Lyrics page can call it.
+- [x] Lyric worker: lyric_motion.hpp/.cpp, ui_lyrics.inc, ui_player.inc, tests/lyric_motion_tests.cpp, tools/motion_preview.cpp. API LyricMotionFrame {double position;bool active;}, LyricMotion::Update(const View&,double monotonicSeconds). It handles track/lyrics/theme/page changes, playback jumps, manual full-lyrics first row, pauses/seek previews and 500ms ease. Helper above consumes View.lyricPosition, clips/fades/scales cached glyphs without per-frame image decode. Motion files include ui.hpp; root integrates builds. No other shared file edits.
+- [x] Root: main.cpp/interaction.hpp/.cpp integration, new CMake targets/version/log version, new behavioral integration tests if needed. Settings touch section actions, controller ZL/ZR switches section, A dispatches selected visible setting action; arrows preserve volume and source list expectations. Apply motion to final View and include active in repaint decision. Preserve foreground/background audio lifecycle.
+- [x] Root validation: source baseline saved in build/diagnostics/baseline-0.5.0-source; device screenshots/logs archived. ASan/UBSan full tests, native build, previews and animation frames; fresh read-only review, package with NRO/ELF matching hashes; same-path FTP replace and logs verification if reachable. Do not claim new device runtime acceptance before receiving device evidence.
+
+Completed 2026-10-30: full ASan/UBSan tests 14/14; final affected tests 3/3; native build; 63 static previews and 366 animation frames; independent review closed; same-path FTP full SHA readback and both logs empty verified. New-version hardware acceptance remains pending. See ../../validation-0.5.1.md.

@@ -1,8 +1,10 @@
 #include "assets.hpp"
+#include "fslock.hpp"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <ctime>
+#include <cstring>
 #include <cerrno>
 #include <set>
 #include <sys/stat.h>
@@ -27,14 +29,14 @@ bool Remove(const std::string&p){
 #ifdef _WIN32
 return DeleteFileW(Wide(p).c_str())!=0;
 #else
-return std::remove(p.c_str())==0;
+return papa::RemoveLocked(p.c_str())==0;
 #endif
 }
 bool Move(const std::string&a,const std::string&b){
 #ifdef _WIN32
 return MoveFileExW(Wide(a).c_str(),Wide(b).c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH)!=0;
 #else
-return std::rename(a.c_str(),b.c_str())==0;
+return papa::RenameLocked(a.c_str(),b.c_str())==0;
 #endif
 }
 bool Directory(const std::string&p){
@@ -69,18 +71,18 @@ std::vector<Entry> Entries(const std::string&root,bool streamsOnly=false){
 }
 std::vector<uint8_t>ReadFile(const std::string&p,size_t max){
     FILE*f=OpenUtf8File(p,"rb");if(!f)return {};std::vector<uint8_t>out;uint8_t chunk[8192];size_t n;
-    while((n=std::fread(chunk,1,sizeof(chunk),f))){if(out.size()>max||n>max-out.size()){std::fclose(f);return {};}out.insert(out.end(),chunk,chunk+n);}
-    bool error=std::ferror(f)!=0;std::fclose(f);return error?std::vector<uint8_t>{}:out;
+    while((n=std::fread(chunk,1,sizeof(chunk),f))){if(out.size()>max||n>max-out.size()){papa::CloseLocked(f);return {};}out.insert(out.end(),chunk,chunk+n);}
+    bool error=std::ferror(f)!=0;papa::CloseLocked(f);return error?std::vector<uint8_t>{}:out;
 }
 std::string Key(const std::string&s){uint64_t h=14695981039346656037ull;for(unsigned char c:s){h^=c;h*=1099511628211ull;}char out[24];std::snprintf(out,sizeof(out),"%016llx",static_cast<unsigned long long>(h));return out;}
 bool Cancelled(const std::atomic<uint64_t>*p,uint64_t v){return p&&p->load()!=v;}
 
 void RestoreDerived(Track&track,MediaCache&cache){
-    if(track.source!=SourceKind::SD||track.path.empty())return;
+    if(track.path.empty())return;
     const std::string prefix=cache.MetadataDirectory()+"/";
     bool missing=false;
-    for(auto*ref:{&track.cover,&track.lyrics})if(ref->compare(0,prefix.size(),prefix)==0){FILE*f=OpenUtf8File(*ref,"rb");if(f)std::fclose(f);else {ref->clear();missing=true;}}
-    if(missing)cache.Enrich(track);
+    for(auto*ref:{&track.cover,&track.lyrics})if(ref->compare(0,prefix.size(),prefix)==0){FILE*f=OpenUtf8File(*ref,"rb");if(f)papa::CloseLocked(f);else {ref->clear();missing=true;}}
+    if(missing&&track.source==SourceKind::SD)cache.Enrich(track);
 }
 }
 std::shared_ptr<CoverImage>DecodeCover(const std::vector<uint8_t>&bytes,int maximumEdge){
@@ -121,7 +123,8 @@ CacheUsage MediaCache::Usage()const{std::lock_guard<std::mutex>lock(usageMutex_)
 void MediaCache::PublishLocked(){std::lock_guard<std::mutex>lock(usageMutex_);usage_={total_,static_cast<uint64_t>(index_.size()),ready_};}
 bool MediaCache::ManagedPath(const std::string&path)const{
     for(const auto*folder:{"metadata","assets","streams"}){auto prefix=root_+"/"+folder+"/";
-        if(path.compare(0,prefix.size(),prefix))continue;auto name=path.substr(prefix.size());
+        if(path.compare(0,prefix.size(),prefix))continue;
+        auto name=path.substr(prefix.size());
         return name.find_first_of("/\\")==std::string::npos&&Managed(name,folder)&&Directory(root_+"/"+folder);
     }return false;
 }
@@ -156,7 +159,8 @@ void MediaCache::RefreshStreams(bool force){
     for(const auto&e:files){index_[e.path]={e.bytes,e.modified,true};total_+=e.bytes;streams_.insert(e.path);if(!ready_)changed_.insert(e.path);}PublishLocked();
 }
 bool MediaCache::TrimLocked(uint64_t target,const std::set<std::string>&keep){
-    if(!ready_)return false;if(total_<=target)return true;
+    if(!ready_)return false;
+    if(total_<=target)return true;
     std::vector<Entry>files;for(const auto&e:index_)if(!e.second.stream&&!keep.count(e.first))files.push_back({e.first,e.second.bytes,e.second.modified,false});
     std::sort(files.begin(),files.end(),[](const Entry&a,const Entry&b){return a.modified==b.modified?a.path<b.path:a.modified<b.modified;});
     for(const auto&e:files){if(total_<=target)break;if(Remove(e.path)){total_-=e.bytes;index_.erase(e.path);}else RecordLocked(e.path);}
@@ -168,7 +172,7 @@ void MediaCache::Enrich(Track&track){
     EnrichTrack(track,room?MetadataDirectory():std::string{});
     RecordAsset(track.cover);RecordAsset(track.lyrics);Prune({track.cover,track.lyrics});
 }
-void MediaCache::SetLimit(uint64_t v){std::lock_guard<std::mutex>lock(mutex_);limit_=std::max<uint64_t>(4096,v);}
+void MediaCache::SetLimit(uint64_t v){limit_.store(std::max<uint64_t>(4096,v));}
 void MediaCache::SetPins(const std::vector<std::string>&paths){std::lock_guard<std::mutex>lock(mutex_);pins_.clear();for(const auto&p:paths)if(!p.empty())pins_.insert(AssetPath(p));}
 std::string MediaCache::AssetPath(const std::string&reference)const{
     if(reference.compare(0,7,"http://")&&reference.compare(0,8,"https://"))return reference;
@@ -191,32 +195,123 @@ std::vector<uint8_t>MediaCache::ReadAsset(const std::string&reference,size_t max
     if(reference.empty()||Cancelled(cancel,expected))return {};
     if(reference.compare(0,7,"http://")&&reference.compare(0,8,"https://"))return ReadFile(reference,maximum);
     std::string cached=AssetPath(reference);
-    if(!refresh){std::lock_guard<std::mutex>lock(mutex_);auto bytes=ReadFile(cached,maximum);if(!bytes.empty())return bytes;}
+    if(!refresh){auto bytes=ReadFile(cached,maximum);if(!bytes.empty())return bytes;}
     auto result=FetchUrl(reference,maximum,cancel,expected);if(result.cancelled||Cancelled(cancel,expected))return {};
-    if(!result.error.empty()){std::lock_guard<std::mutex>lock(mutex_);return ReadFile(cached,maximum);}
-    {std::lock_guard<std::mutex>write(writeMutex_);
-        RefreshStreams();
-        std::lock_guard<std::mutex>lock(mutex_);auto keep=pins_;keep.insert(cached);
-        // Retain the old URL file until replacement is complete; count both at peak.
-        if(result.bytes.size()<=limit_&&TrimLocked(limit_-result.bytes.size(),keep)){
-            auto temporary=cached+".tmp";FILE*f=OpenUtf8File(temporary,"wb");if(f){bool ok=std::fwrite(result.bytes.data(),1,result.bytes.size(),f)==result.bytes.size();ok=std::fclose(f)==0&&ok;if(ok&&!Cancelled(cancel,expected)){if(!Move(temporary,cached))Remove(temporary);}else Remove(temporary);RecordLocked(temporary);RecordLocked(cached);PublishLocked();}
-        }
-    }
+    if(!result.error.empty())return ReadFile(cached,maximum);
+    Store(cached,result.bytes,{},cancel,expected);
     return result.bytes;
 }
-ArtworkLoader::ArtworkLoader(MediaCache&c):cache_(c),thread_([this]{Run();}){}
+namespace {
+constexpr size_t CloudTagLimit=16*1024*1024,CloudTextLimit=1024*1024;
+bool Fresh(const std::string& path,int ageSeconds){
+ struct stat info{};return stat(path.c_str(),&info)==0 && info.st_mtime<=std::time(nullptr) && std::time(nullptr)-info.st_mtime<ageSeconds;
+}
+bool Readable(const std::string& path){FILE* f=OpenUtf8File(path,"rb");if(!f)return false;papa::CloseLocked(f);return true;}
+bool GoodText(const std::string& text){return !text.empty()&&text.find("\xef\xbf\xbd")==std::string::npos;}
+void FillMetadata(Track& track,const Track& metadata){
+ if(track.title.empty()&&GoodText(metadata.title))track.title=metadata.title;
+ if((track.artist.empty()||track.artist=="未知歌手")&&GoodText(metadata.artist))track.artist=metadata.artist;
+ if((track.album.empty()||track.album=="未知专辑")&&GoodText(metadata.album))track.album=metadata.album;
+ if(track.albumArtist.empty()&&GoodText(metadata.albumArtist))track.albumArtist=metadata.albumArtist;
+ if(track.duration<=0&&std::isfinite(metadata.duration)&&metadata.duration>0)track.duration=metadata.duration;
+ if(!track.trackNumber)track.trackNumber=metadata.trackNumber;
+ if(!track.discNumber)track.discNumber=metadata.discNumber;
+ if(track.cover.empty())track.cover=metadata.cover;
+ if(track.lyrics.empty())track.lyrics=metadata.lyrics;
+}
+std::string LyricText(const Metadata& m){
+ if(m.lyrics.lines.empty())return m.rawLyrics.size()<=CloudTextLimit?m.rawLyrics:std::string{};
+ std::string out="[offset:"+std::to_string(m.lyrics.offset*1000)+"]\n";
+ for(const auto& line:m.lyrics.lines){char timestamp[64];std::snprintf(timestamp,sizeof(timestamp),"[%02d:%06.3f]",int(line.seconds/60),std::fmod(line.seconds,60));
+  if(out.size()+line.text.size()+std::strlen(timestamp)+1>CloudTextLimit)return {};
+  out+=timestamp;out+=line.text;out+='\n';}
+ return out;
+}
+std::vector<uint8_t> Bytes(const std::string& text){return {text.begin(),text.end()};}
+}
+bool MediaCache::Store(const std::string& path,const std::vector<uint8_t>& bytes,const std::vector<std::string>& pinned,const std::atomic<uint64_t>*cancel,uint64_t expected){
+ if(!ManagedPath(path)||bytes.size()>CloudTagLimit||Cancelled(cancel,expected))return false;
+ std::lock_guard<std::mutex>write(writeMutex_);
+ auto keep=pinned;keep.push_back(path);if(!Reserve(bytes.size(),keep)||Cancelled(cancel,expected))return false;
+ const auto temporary=path+".tmp";FILE* f=OpenUtf8File(temporary,"wb");if(!f)return false;
+ bool ok=std::fwrite(bytes.data(),1,bytes.size(),f)==bytes.size();ok=std::fflush(f)==0&&ok;ok=papa::CloseLocked(f)==0&&ok;
+ if(ok&&!Cancelled(cancel,expected))ok=Move(temporary,path);else ok=false;
+ if(!ok)Remove(temporary);
+ RecordAsset(temporary);RecordAsset(path);return ok;
+}
+void MediaCache::ResolveCloud(Track& track,const std::atomic<uint64_t>*cancel,uint64_t expected,bool refresh){
+ if(track.source!=SourceKind::Cloud||Cancelled(cancel,expected))return;
+ if(!track.title.empty()&&!track.artist.empty()&&!track.album.empty()&&track.album!="未知专辑"&&track.duration>0&&!track.cover.empty()&&!track.lyrics.empty())return;
+ const auto prefix=MetadataDirectory()+"/"+Key(track.path+"/remote-v1");
+ const auto record=prefix+".remote.m3u";
+ if(!refresh&&Fresh(record,24*60*60)){
+  auto bytes=ReadFile(record,128*1024);std::string error;auto saved=ParseCatalog(std::string(bytes.begin(),bytes.end()),"","cache",error);
+  if(saved.size()==1&&saved[0].id==track.id&&saved[0].path==track.path && (saved[0].cover.empty()||Readable(saved[0].cover)) && (saved[0].lyrics.empty()||Readable(saved[0].lyrics))){FillMetadata(track,saved[0]);return;}
+ }
+ auto response=FetchPrefix(track.path,65536,cancel,expected);
+ if(!response.error.empty()||Cancelled(cancel,expected))return;
+ if(response.bytes.size()>=10&&!std::memcmp(response.bytes.data(),"ID3",3)){
+  const auto* h=response.bytes.data()+6;
+  if(!(h[0]&128)&&!(h[1]&128)&&!(h[2]&128)&&!(h[3]&128)){
+   size_t size=(size_t(h[0])<<21)|(size_t(h[1])<<14)|(size_t(h[2])<<7)|h[3];
+   if(size<=CloudTagLimit&&size+10>response.bytes.size())response=FetchPrefix(track.path,size+10,cancel,expected);
+  }
+ }
+ if(!response.error.empty()||Cancelled(cancel,expected))return;
+ auto m=ReadMetadataBytes(response.bytes);Track metadata;metadata.source=SourceKind::Cloud;metadata.path=track.path;metadata.id=track.id;metadata.sourceId=track.sourceId;
+ metadata.title=m.title;metadata.artist=m.artist;metadata.album=m.album;metadata.albumArtist=m.albumArtist;metadata.duration=m.duration;metadata.trackNumber=m.track;metadata.discNumber=m.disc;
+ std::vector<std::string>keep{record,track.cover,track.lyrics};
+ if(!m.cover.empty()){auto path=prefix+(m.coverMime=="image/png"?".png":".jpg");if(Store(path,m.cover,keep,cancel,expected)){metadata.cover=path;keep.push_back(path);}}
+ auto lyrics=LyricText(m);
+ if(!lyrics.empty()){auto path=prefix+".lrc";if(Store(path,Bytes(lyrics),keep,cancel,expected)){metadata.lyrics=path;keep.push_back(path);}}
+ if(Cancelled(cancel,expected))return;
+ Store(record,Bytes(ExportPlaylist({"remote","remote",{metadata}})),keep,cancel,expected);
+ FillMetadata(track,metadata);
+}
+void MediaCache::ResolveLyrics(Track& track,const std::string& service,const std::atomic<uint64_t>*cancel,uint64_t expected,bool refresh){
+ if(!track.lyrics.empty()||Cancelled(cancel,expected))return;
+ auto url=ExactLyricsUrl(service,track);if(url.empty()||url.size()>8192)return;
+ const auto prefix=MetadataDirectory()+"/"+Key(url+"/exact-v1");
+ const auto path=prefix+".lrc",miss=prefix+".miss",retry=prefix+".retry";
+ if(!refresh){
+  if(Fresh(path,30*24*60*60)&&!ReadFile(path,CloudTextLimit).empty()){track.lyrics=path;auto bytes=ReadFile(prefix+".duration",128);std::string text(bytes.begin(),bytes.end());char* end=nullptr;double duration=std::strtod(text.c_str(),&end);if(track.duration<=0&&end!=text.c_str()&&!*end&&std::isfinite(duration)&&duration>0&&duration<=86400)track.duration=duration;return;}
+  if(Fresh(miss,24*60*60)||Fresh(retry,5*60))return;
+ }
+ auto response=FetchUrl(url,2*CloudTextLimit+65536,cancel,expected,6000);
+ if(response.cancelled||Cancelled(cancel,expected))return;
+ if(!response.error.empty()){
+  Store(response.httpCode==404?miss:retry,{'1'}, {track.cover},cancel,expected);return;
+ }
+ auto exact=ParseExactLyrics(std::string(response.bytes.begin(),response.bytes.end()),track);
+ if(!exact.matched||exact.text.empty()){Store(miss,{'1'},{track.cover},cancel,expected);return;}
+ if(Store(path,Bytes(exact.text),{track.cover},cancel,expected)){track.lyrics=path;Store(prefix+".duration",Bytes(std::to_string(exact.duration)),{track.cover,path},cancel,expected);if(track.duration<=0)track.duration=exact.duration;}
+}
+ArtworkLoader::ArtworkLoader(MediaCache&c,std::string service):cache_(c),lyricsService_(std::move(service)),thread_([this]{Run();}){}
 ArtworkLoader::~ArtworkLoader(){generation_.fetch_add(1);{std::lock_guard<std::mutex>lock(mutex_);running_=false;}changed_.notify_all();if(thread_.joinable())thread_.join();}
-void ArtworkLoader::Request(const Track&track,bool refresh){std::lock_guard<std::mutex>lock(mutex_);generation_.fetch_add(1);requested_=track;pending_=true;refresh_=refresh;snapshot_={};snapshot_.trackId=track.id;snapshot_.loading=true;changed_.notify_one();}
+void ArtworkLoader::Request(const Track&track,bool refresh){std::lock_guard<std::mutex>lock(mutex_);generation_.fetch_add(1);requested_=track;pending_=true;refresh_=refresh;snapshot_={};snapshot_.trackId=track.id;snapshot_.trackPath=track.path;snapshot_.loading=true;changed_.notify_one();}
 ArtworkSnapshot ArtworkLoader::Snapshot(){std::lock_guard<std::mutex>lock(mutex_);return snapshot_;}
 void ArtworkLoader::Run(){
     for(;;){Track track;bool refresh;uint64_t version;
         {std::unique_lock<std::mutex>lock(mutex_);changed_.wait(lock,[this]{return pending_||!running_;});if(!running_)return;track=requested_;refresh=refresh_;pending_=false;version=generation_.load();}
-        ArtworkSnapshot value;value.trackId=track.id;
+        ArtworkSnapshot value;value.trackId=track.id;value.trackPath=track.path;
+        auto publish=[&](bool loading){
+            if(Cancelled(&generation_,version))return;
+            value.loading=loading;value.enrichedTrack=std::make_shared<const Track>(track);
+            std::lock_guard<std::mutex>lock(mutex_);
+            if(running_&&generation_.load()==version&&!pending_)snapshot_=value;
+        };
         RestoreDerived(track,cache_);
+        if(track.source==SourceKind::Cloud)cache_.ResolveCloud(track,&generation_,version,refresh);
         if(!track.cover.empty()){auto bytes=cache_.ReadAsset(track.cover,4*1024*1024,&generation_,version,refresh);if(!Cancelled(&generation_,version))value.cover=DecodeCover(bytes);if(!value.cover)value.note="封面暂不可用";}
+        publish(true);
         if(!Cancelled(&generation_,version)&&!track.lyrics.empty()){auto bytes=cache_.ReadAsset(track.lyrics,1024*1024,&generation_,version,refresh);if(!bytes.empty())value.lyrics=std::make_shared<Lyrics>(ParseLyrics(std::string(bytes.begin(),bytes.end())));}
+        if(!Cancelled(&generation_,version)&&(!value.lyrics || (value.lyrics->lines.empty()&&value.lyrics->plain.empty()))){
+            cache_.ResolveLyrics(track,lyricsService_,&generation_,version,refresh);
+            if(!track.lyrics.empty()){auto bytes=cache_.ReadAsset(track.lyrics,1024*1024,&generation_,version);if(!bytes.empty())value.lyrics=std::make_shared<Lyrics>(ParseLyrics(std::string(bytes.begin(),bytes.end())));}
+        }
+        if(!value.lyrics || (value.lyrics->lines.empty()&&value.lyrics->plain.empty())){if(!value.note.empty())value.note+=" · ";value.note+="暂无匹配歌词";}
         cache_.Prune({track.cover,track.lyrics});
-        {std::lock_guard<std::mutex>lock(mutex_);if(running_&&generation_.load()==version&&!pending_)snapshot_=std::move(value);}
+        publish(false);
     }
 }
 ThumbnailLoader::ThumbnailLoader(MediaCache&cache):cache_(cache),thread_([this]{Run();}){}

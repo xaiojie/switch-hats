@@ -22,5 +22,19 @@ int main(){
     CHECK(m.RemoveQueued(0));CHECK(m.Current()->id==c.id);CHECK(m.QueueIndex()==0);
     CHECK(m.RemoveQueued(0));CHECK(m.Current()->id==b.id);CHECK(m.RemoveQueued(0));CHECK(!m.Current());
     CHECK(!m.Next());CHECK(!m.StartQueue(4));
+    // A late cloud tag result updates matching identities everywhere, without
+    // changing the queue position or touching a changed URL with the same ID.
+    LibraryModel enriched;enriched.SetTracks(SourceKind::Cloud,{c});
+    enriched.SelectSource(LibrarySource::Cloud);CHECK(enriched.StartVisible(0));
+    enriched.SaveQueueAsPlaylist("cached queue");enriched.user.resume.track=c;
+    auto tagged=c;tagged.cover="cache/cover.jpg";tagged.lyrics="cache/song.lrc";tagged.duration=271;
+    CHECK(enriched.UpdateTrackMetadata(tagged));CHECK(enriched.QueueIndex()==0);
+    CHECK(enriched.Current()->cover=="cache/cover.jpg");
+    CHECK(enriched.Cloud()[0].lyrics=="cache/song.lrc");
+    CHECK(enriched.user.playlists[0].tracks[0].duration==271);
+    CHECK(enriched.user.resume.track.cover=="cache/cover.jpg");
+    CHECK(!enriched.UpdateTrackMetadata(tagged));
+    tagged.path="https://example.test/replaced.mp3";tagged.cover="wrong.jpg";
+    CHECK(!enriched.UpdateTrackMetadata(tagged));CHECK(enriched.Current()->cover=="cache/cover.jpg");
     std::puts("PASS app model: SD/cloud isolation, persistent queue, search/groups/favorites, mixed playlists, queue edit");
 }
